@@ -1,4 +1,5 @@
 import os
+from concurrent.futures import ThreadPoolExecutor
 import unittest
 import uuid
 from pathlib import Path
@@ -29,6 +30,15 @@ class PostgreSQLTests(unittest.TestCase):
         self.assertEqual(save_lead(DATABASE_URL, {**lead, "name": "Changed"}), "conflict")
         with self.psycopg.connect(DATABASE_URL) as conn:
             self.assertEqual(conn.execute("SELECT count(*) FROM lead_events").fetchone()[0], 1)
+
+    def test_concurrent_delivery_is_idempotent(self):
+        from test_lead_ingest import LEAD, validate
+        from app import save_lead
+        lead = validate(LEAD, 1000000)
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            results = list(pool.map(lambda _: save_lead(DATABASE_URL, lead), range(8)))
+        self.assertEqual(results.count("created"), 1)
+        self.assertEqual(results.count("duplicate"), 7)
 
     def test_expired_lease_fencing_and_retry_limit(self):
         with self.psycopg.connect(DATABASE_URL) as conn:
