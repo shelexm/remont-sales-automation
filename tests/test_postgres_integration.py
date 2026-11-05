@@ -1,4 +1,8 @@
 import os
+import http.client
+import threading
+from http.server import ThreadingHTTPServer
+from urllib.parse import urlencode
 from concurrent.futures import ThreadPoolExecutor
 import unittest
 import uuid
@@ -53,6 +57,32 @@ class PostgreSQLTests(unittest.TestCase):
             self.assertFalse(conn.execute("SELECT finish_lead(%s, %s, true)", (row[0], first)).fetchone()[0])
             self.assertTrue(conn.execute("SELECT finish_lead(%s, %s, false, 2, 0)", (row[0], second)).fetchone()[0])
             self.assertEqual(conn.execute("SELECT status FROM lead_events").fetchone()[0], "failed")
+
+    def test_http_persists_across_receiver_restart(self):
+        from app import make_handler
+        from test_lead_ingest import LEAD, TOKEN
+
+        def send():
+            server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(DATABASE_URL, TOKEN, 1000000))
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                client = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+                client.request("POST", "/webhook/tilda", urlencode(LEAD), {
+                    "Content-Type": "application/x-www-form-urlencoded", "X-Webhook-Key": TOKEN})
+                response = client.getresponse()
+                result = (response.status, response.read())
+                client.close()
+                return result
+            finally:
+                server.shutdown()
+                thread.join()
+                server.server_close()
+
+        self.assertIn(b'accepted', send()[1])
+        self.assertIn(b'duplicate', send()[1])
+        with self.psycopg.connect(DATABASE_URL) as conn:
+            self.assertEqual(conn.execute("SELECT count(*) FROM lead_events").fetchone()[0], 1)
 
     def test_same_customer_and_service_within_day_creates_one_case(self):
         from app import save_lead
