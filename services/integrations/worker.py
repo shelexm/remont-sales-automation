@@ -178,7 +178,7 @@ def main():
     if provider == "demo":
         crm = DemoCRM(dsn)
     elif provider == "espocrm":
-        crm = EspoCRM(os.environ["ESPO_URL"], os.environ["ESPO_API_KEY"], Journal(dsn))
+        crm = EspoCRM(os.environ["ESPO_URL"], os.environ["ESPO_API_KEY"], Journal(dsn), os.environ["ESPO_ASSIGNED_USER_ID"])
     else:
         raise ValueError("Unsupported CRM_PROVIDER")
     telegram = None

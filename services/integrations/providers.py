@@ -81,13 +81,16 @@ def request_json(method, url, payload=None, headers=None, side_effect=False):
 
 class EspoCRM:
     """Uses externally stored creation journal; cAutomationKey is required in EspoCRM."""
-    def __init__(self, base_url, api_key, journal, transport=request_json):
+    def __init__(self, base_url, api_key, journal, owner_id, transport=request_json):
         parts = urlsplit(base_url)
         if parts.scheme != "https" or not parts.netloc or parts.username or parts.password or parts.query or parts.fragment:
             raise ValueError("ESPO_URL must be an HTTPS URL without credentials")
         if not api_key:
             raise ValueError("ESPO_API_KEY is required")
+        if not isinstance(owner_id, str) or not owner_id.isalnum():
+            raise ValueError("ESPO_ASSIGNED_USER_ID must be an alphanumeric EspoCRM user ID")
         self.root, self.api_key, self.journal, self.transport = base_url.rstrip("/") + "/api/v1/", api_key, journal, transport
+        self.owner_id = owner_id
 
     def _call(self, method, path, payload=None, side_effect=False):
         return self.transport(method, self.root + path, payload, {"X-Api-Key": self.api_key}, side_effect)
@@ -135,8 +138,8 @@ class EspoCRM:
     def sync(self, case_id, lead):
         # A case-scoped contact avoids putting phone numbers in correlation keys.
         key = f"remont-case-{case_id}"
-        contact = self._sync_entity("Contact", key, {"lastName": lead["name"], "phoneNumber": lead["phone"]})
-        deal = self._sync_entity("Opportunity", key, {"name": f"Ремонт #{case_id}", "amount": lead["budget"], "contactsIds": [contact]})
+        contact = self._sync_entity("Contact", key, {"lastName": lead["name"], "phoneNumber": lead["phone"], "assignedUserId": self.owner_id})
+        deal = self._sync_entity("Opportunity", key, {"name": f"Ремонт #{case_id}", "amount": lead["budget"], "amountCurrency": "RUB", "contactsIds": [contact], "assignedUserId": self.owner_id})
         return CRMResult(contact, deal)
 
 

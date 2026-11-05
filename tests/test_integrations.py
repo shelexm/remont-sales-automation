@@ -27,11 +27,20 @@ class Journal:
 
 
 class ProviderTests(unittest.TestCase):
+    def test_espo_requires_valid_assigned_user(self):
+        for owner in ("", "bad-id", None):
+            with self.subTest(owner=owner), self.assertRaises(ValueError):
+                EspoCRM("https://example.invalid", "unit-test", Journal(), owner)
+
     def test_espo_creates_then_updates_without_duplicate(self):
         records = {}
         def fake(method, url, payload, headers, side_effect):
             self.assertEqual(headers["X-Api-Key"], "unit-test")
+            if method in ("POST", "PUT"):
+                self.assertEqual(payload["assignedUserId"], "owner123")
             entity = "Contact" if "/Contact" in url else "Opportunity"
+            if method in ("POST", "PUT") and entity == "Opportunity":
+                self.assertEqual(payload["amountCurrency"], "RUB")
             if method == "GET":
                 return {"list": [{"id": records[entity]}] if entity in records else []}
             if method == "POST":
@@ -39,7 +48,7 @@ class ProviderTests(unittest.TestCase):
                 return {"id": records[entity]}
             self.assertEqual(method, "PUT")
             return {"id": records[entity]}
-        adapter = EspoCRM("https://example.invalid", "unit-test", Journal(), fake)
+        adapter = EspoCRM("https://example.invalid", "unit-test", Journal(), "owner123", fake)
         first = adapter.sync(7, LEAD)
         second = adapter.sync(7, LEAD)
         self.assertEqual(first, second)
@@ -52,7 +61,7 @@ class ProviderTests(unittest.TestCase):
                 return {"list": []}
             posts.append(url)
             raise Uncertain("timeout")
-        adapter = EspoCRM("https://example.invalid", "unit-test", Journal(), fake)
+        adapter = EspoCRM("https://example.invalid", "unit-test", Journal(), "owner123", fake)
         with self.assertRaises(Uncertain):
             adapter.sync(9, LEAD)
         with self.assertRaises(Uncertain):
