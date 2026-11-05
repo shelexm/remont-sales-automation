@@ -1,0 +1,33 @@
+name: remont-local
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: remont
+      POSTGRES_USER: remont
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+    volumes:
+      - remont-db:/var/lib/postgresql/data
+      - ./infra/postgres/001_schema.sql:/docker-entrypoint-initdb.d/001_schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U remont -d remont"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    restart: unless-stopped
+  receiver:
+    build:
+      context: .
+      dockerfile: services/lead_ingest/Dockerfile
+    environment:
+      DATABASE_URL: postgresql://remont:${POSTGRES_PASSWORD}@db:5432/remont
+      WEBHOOK_KEY: ${WEBHOOK_KEY:?Set WEBHOOK_KEY}
+      HIGH_BUDGET_THRESHOLD: ${HIGH_BUDGET_THRESHOLD:-1000000}
+    ports:
+      - "127.0.0.1:18080:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+volumes:
+  remont-db:
