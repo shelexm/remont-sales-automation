@@ -19,7 +19,7 @@ class PostgreSQLTests(unittest.TestCase):
 
     def setUp(self):
         with self.psycopg.connect(DATABASE_URL) as conn:
-            conn.execute("TRUNCATE lead_events RESTART IDENTITY")
+            conn.execute("TRUNCATE lead_events, lead_cases RESTART IDENTITY")
 
     def test_duplicate_and_changed_payload(self):
         from test_lead_ingest import LEAD, validate
@@ -53,6 +53,23 @@ class PostgreSQLTests(unittest.TestCase):
             self.assertFalse(conn.execute("SELECT finish_lead(%s, %s, true)", (row[0], first)).fetchone()[0])
             self.assertTrue(conn.execute("SELECT finish_lead(%s, %s, false, 2, 0)", (row[0], second)).fetchone()[0])
             self.assertEqual(conn.execute("SELECT status FROM lead_events").fetchone()[0], "failed")
+
+    def test_same_customer_and_service_within_day_creates_one_case(self):
+        from app import save_lead
+        from test_lead_ingest import LEAD, validate
+        lead = validate(LEAD, 1000000)
+        self.assertEqual(save_lead(DATABASE_URL, lead), "created")
+        self.assertEqual(save_lead(DATABASE_URL, {**lead, "source_id": "different"}), "created")
+        with self.psycopg.connect(DATABASE_URL) as conn:
+            for _ in range(2):
+                token = uuid.uuid4()
+                event = conn.execute("SELECT id FROM claim_lead(%s)", (token,)).fetchone()
+                self.assertIsNotNone(event)
+                result = conn.execute("SELECT duplicate FROM process_lead(%s, %s)", (event[0], token)).fetchone()
+                self.assertIsNotNone(result)
+            self.assertEqual(conn.execute("SELECT occurrences FROM lead_cases").fetchone()[0], 2)
+            self.assertEqual(conn.execute("SELECT count(*) FROM lead_cases").fetchone()[0], 1)
+            self.assertEqual(conn.execute("SELECT count(*) FROM lead_events WHERE status = 'completed'").fetchone()[0], 2)
 
     def test_storage_failure_does_not_report_success(self):
         from app import save_lead

@@ -50,3 +50,48 @@ BEGIN
     GET DIAGNOSTICS changed = ROW_COUNT;
     RETURN changed = 1;
 END $$;
+
+CREATE TABLE IF NOT EXISTS lead_cases (
+    id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    phone text NOT NULL,
+    service text NOT NULL,
+    first_event_id bigint NOT NULL REFERENCES lead_events(id),
+    last_event_id bigint NOT NULL REFERENCES lead_events(id),
+    occurrences integer NOT NULL DEFAULT 1,
+    first_seen_at timestamptz NOT NULL DEFAULT now(),
+    last_seen_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS lead_cases_dedup_idx ON lead_cases (phone, service, last_seen_at DESC);
+ALTER TABLE lead_events ADD COLUMN IF NOT EXISTS case_id bigint REFERENCES lead_cases(id);
+
+-- Serialise matching phone/service while determining whether this is a recent repeat.
+CREATE OR REPLACE FUNCTION process_lead(p_id bigint, p_token uuid)
+RETURNS TABLE(event_id bigint, result_case_id bigint, duplicate boolean)
+LANGUAGE plpgsql AS $$
+DECLARE e lead_events%ROWTYPE; existing_id bigint;
+BEGIN
+    SELECT * INTO e FROM lead_events WHERE id = p_id AND status = 'processing'
+        AND lease_token = p_token AND lease_until > now() FOR UPDATE;
+    IF NOT FOUND THEN
+        RETURN;
+    END IF;
+    PERFORM pg_advisory_xact_lock(hashtextextended((e.payload->>'phone') || ':' || (e.payload->>'service'), 0));
+    SELECT id INTO existing_id FROM lead_cases
+    WHERE phone = e.payload->>'phone' AND service = e.payload->>'service'
+      AND last_seen_at >= now() - interval '24 hours'
+    ORDER BY last_seen_at DESC, id DESC LIMIT 1 FOR UPDATE;
+    IF existing_id IS NULL THEN
+        INSERT INTO lead_cases(phone, service, first_event_id, last_event_id)
+        VALUES (e.payload->>'phone', e.payload->>'service', e.id, e.id) RETURNING id INTO existing_id;
+        duplicate := false;
+    ELSE
+        UPDATE lead_cases SET last_event_id = e.id, occurrences = occurrences + 1, last_seen_at = now()
+        WHERE id = existing_id;
+        duplicate := true;
+    END IF;
+    UPDATE lead_events SET status = 'completed', case_id = existing_id,
+        lease_until = NULL, lease_token = NULL, updated_at = now() WHERE id = e.id;
+    event_id := e.id;
+    result_case_id := existing_id;
+    RETURN NEXT;
+END $$;
