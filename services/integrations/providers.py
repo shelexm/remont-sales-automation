@@ -5,7 +5,19 @@ from dataclasses import dataclass
 from typing import Protocol
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlsplit
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
+
+
+class NoRedirect(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_opener = build_opener(NoRedirect())
+
+
+def _open(request, timeout):
+    return _opener.open(request, timeout=timeout)
 
 
 class Retryable(Exception):
@@ -39,7 +51,7 @@ def request_json(method, url, payload=None, headers=None, side_effect=False):
         request_headers["Content-Type"] = "application/json"
         data = json.dumps(payload, ensure_ascii=False).encode()
     try:
-        with urlopen(Request(url, data=data, headers=request_headers, method=method), timeout=8) as response:
+        with _open(Request(url, data=data, headers=request_headers, method=method), timeout=8) as response:
             body = response.read(1024 * 1024 + 1)
             if len(body) > 1024 * 1024:
                 raise ValueError("response_too_large")

@@ -7,7 +7,7 @@ from urllib.error import HTTPError, URLError
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "services" / "integrations"))
-from providers import EspoCRM, Permanent, Retryable, Telegram, Uncertain, request_json  # noqa: E402
+from providers import EspoCRM, NoRedirect, Permanent, Retryable, Telegram, Uncertain, request_json  # noqa: E402
 
 LEAD = {"name": "Example", "phone": "+79991234567", "budget": 200000, "service": "capital", "budget_class": "low"}
 
@@ -68,19 +68,22 @@ class ProviderTests(unittest.TestCase):
         self.assertNotIn(LEAD["phone"], json.dumps(calls))
         self.assertNotIn(LEAD["name"], json.dumps(calls))
 
+    def test_redirect_does_not_forward_secrets(self):
+        self.assertIsNone(NoRedirect().redirect_request(None, None, 302, "", {}, "https://other.invalid"))
+
     def test_http_errors_respect_rate_limit_and_uncertainty(self):
         error = HTTPError("https://example.invalid", 429, "rate", {}, io.BytesIO(b'{"parameters":{"retry_after":17}}'))
-        with patch("providers.urlopen", side_effect=error):
+        with patch("providers._open", side_effect=error):
             with self.assertRaises(Retryable) as caught:
                 request_json("POST", "https://example.invalid", {}, side_effect=True)
         self.assertEqual(caught.exception.delay, 17)
-        with patch("providers.urlopen", side_effect=URLError("down")):
+        with patch("providers._open", side_effect=URLError("down")):
             with self.assertRaises(Uncertain):
                 request_json("POST", "https://example.invalid", {}, side_effect=True)
             with self.assertRaises(Retryable):
                 request_json("GET", "https://example.invalid")
         error = HTTPError("https://example.invalid", 403, "forbidden", {}, io.BytesIO(b''))
-        with patch("providers.urlopen", side_effect=error), self.assertRaises(Permanent):
+        with patch("providers._open", side_effect=error), self.assertRaises(Permanent):
             request_json("GET", "https://example.invalid")
 
 
