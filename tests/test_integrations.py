@@ -7,7 +7,7 @@ from urllib.error import HTTPError, URLError
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "services" / "integrations"))
-from providers import EspoCRM, NoRedirect, Permanent, Retryable, Telegram, Uncertain, request_json  # noqa: E402
+from providers import Conflict, EspoCRM, NoRedirect, Permanent, Retryable, Telegram, Uncertain, request_json  # noqa: E402
 
 LEAD = {"name": "Example", "phone": "+79991234567", "budget": 200000, "service": "capital", "budget_class": "low"}
 
@@ -68,6 +68,53 @@ class ProviderTests(unittest.TestCase):
             adapter.sync(9, LEAD)
         self.assertEqual(len(posts), 1)
 
+    def test_new_case_reuses_single_contact_with_same_phone(self):
+        actions = []
+        def fake(method, url, payload, headers, side_effect):
+            actions.append((method, url))
+            if method == "GET":
+                return {"list": [{"id": "contact123"}]} if "phoneNumber" in url else {"list": []}
+            if method == "POST" and "/Opportunity" in url:
+                self.assertEqual(payload["contactsIds"], ["contact123"])
+                return {"id": "deal123"}
+            self.fail("Existing contact must not be modified or duplicated")
+        adapter = EspoCRM("https://example.invalid", "unit-test", Journal(), "owner123", fake)
+        self.assertEqual(adapter.sync(8, LEAD).contact_id, "contact123")
+        self.assertFalse(any(method == "PUT" for method, _ in actions))
+
+    def test_multiple_contact_matches_do_not_create_or_choose(self):
+        def fake(method, url, payload, headers, side_effect):
+            if method == "GET" and "phoneNumber" in url:
+                return {"list": [{"id": "one1"}, {"id": "two2"}]}
+            self.assertEqual(method, "GET")
+            return {"list": []}
+        with self.assertRaises(Uncertain):
+            EspoCRM("https://example.invalid", "unit-test", Journal(), "owner123", fake).sync(10, LEAD)
+
+    def test_contact_conflict_is_reconciled_only_when_single_match_is_visible(self):
+        seen = []
+        def fake(method, url, payload, headers, side_effect):
+            if method == "GET" and "phoneNumber" in url:
+                seen.append(1)
+                return {"list": [] if len(seen) == 1 else [{"id": "contact123"}]}
+            if method == "GET":
+                return {"list": []}
+            if "/Contact" in url:
+                raise Conflict("remote_conflict")
+            return {"id": "deal123"}
+        self.assertEqual(EspoCRM("https://example.invalid", "unit-test", Journal(), "owner123", fake).sync(11, LEAD).contact_id, "contact123")
+
+    def test_contact_conflict_with_no_visible_match_is_uncertain(self):
+        def fake(method, url, payload, headers, side_effect):
+            if method == "GET":
+                return {"list": []}
+            raise Conflict("remote_conflict")
+        adapter = EspoCRM("https://example.invalid", "unit-test", Journal(), "owner123", fake)
+        with self.assertRaises(Uncertain):
+            adapter.sync(12, LEAD)
+        with self.assertRaises(Uncertain):
+            adapter.sync(12, LEAD)
+
     def test_telegram_notification_excludes_personal_data(self):
         calls = []
         def fake(method, url, payload, headers, side_effect):
@@ -94,6 +141,9 @@ class ProviderTests(unittest.TestCase):
         error = HTTPError("https://example.invalid", 403, "forbidden", {}, io.BytesIO(b''))
         with patch("providers._open", side_effect=error), self.assertRaises(Permanent):
             request_json("GET", "https://example.invalid")
+        error = HTTPError("https://example.invalid", 409, "conflict", {}, io.BytesIO(b''))
+        with patch("providers._open", side_effect=error), self.assertRaises(Conflict):
+            request_json("POST", "https://example.invalid", {}, side_effect=True)
 
 
 if __name__ == "__main__":

@@ -34,6 +34,10 @@ class Permanent(Exception):
     pass
 
 
+class Conflict(Permanent):
+    pass
+
+
 @dataclass(frozen=True)
 class CRMResult:
     contact_id: str
@@ -57,6 +61,8 @@ def request_json(method, url, payload=None, headers=None, side_effect=False):
                 raise ValueError("response_too_large")
             return json.loads(body)
     except HTTPError as exc:
+        if exc.code == 409:
+            raise Conflict("remote_conflict") from None
         if exc.code == 429:
             retry_after = exc.headers.get("Retry-After", "60")
             try:
@@ -95,6 +101,22 @@ class EspoCRM:
     def _call(self, method, path, payload=None, side_effect=False):
         return self.transport(method, self.root + path, payload, {"X-Api-Key": self.api_key}, side_effect)
 
+    def _find_contact_by_phone(self, phone):
+        params = urlencode({"where[0][type]": "equals", "where[0][attribute]": "phoneNumber",
+                            "where[0][value]": phone, "maxSize": "2", "select": "id"})
+        result = self._call("GET", "Contact?" + params)
+        matches = result.get("list") if isinstance(result, dict) else None
+        if not isinstance(matches, list):
+            raise Permanent("invalid_crm_response")
+        if len(matches) > 1:
+            raise Uncertain("multiple_phone_matches")
+        if not matches:
+            return None
+        remote_id = matches[0].get("id") if isinstance(matches[0], dict) else None
+        if not isinstance(remote_id, str) or not remote_id.isalnum():
+            raise Permanent("invalid_crm_id")
+        return remote_id
+
     def _sync_entity(self, entity, key, fields):
         params = urlencode({"where[0][type]": "equals", "where[0][attribute]": "cAutomationKey", "where[0][value]": key, "maxSize": "2"})
         result = self._call("GET", entity + "?" + params)
@@ -110,10 +132,25 @@ class EspoCRM:
             self.journal.found(entity, key, remote_id)
             self._call("PUT", f"{entity}/{remote_id}", fields, side_effect=False)
             return remote_id
+        if entity == "Contact":
+            existing = self._find_contact_by_phone(fields["phoneNumber"])
+            if existing:
+                self.journal.found(entity, key, existing)
+                return existing
         if not self.journal.begin_create(entity, key):
             raise Uncertain("creation_previously_attempted")
         try:
             created = self._call("POST", entity, {**fields, "cAutomationKey": key}, side_effect=True)
+        except Conflict:
+            if entity == "Contact":
+                existing = self._find_contact_by_phone(fields["phoneNumber"])
+                if existing:
+                    self.journal.found(entity, key, existing)
+                    return existing
+                # The conflict could be a hidden or ambiguous duplicate; don't retry blindly.
+                raise Uncertain("contact_conflict_unresolved") from None
+            self.journal.reset_create(entity, key)
+            raise
         except Retryable:
             self.journal.reset_create(entity, key)
             raise
