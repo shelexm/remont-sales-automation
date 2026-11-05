@@ -64,6 +64,25 @@ class WebhookTests(unittest.TestCase):
         self.assertEqual(self.request(LEAD), 200)
         self.assertEqual(len(self.saved), before + 1)
 
+    def test_storage_failure_returns_503(self):
+        def fail_store(dsn, lead):
+            raise RuntimeError("storage failure")
+        server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler("ok", TOKEN, 1000000, fail_store))
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            conn = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=3)
+            conn.request("POST", "/webhook/tilda", urlencode(LEAD), {
+                "Content-Type": "application/x-www-form-urlencoded", "X-Webhook-Key": TOKEN})
+            response = conn.getresponse()
+            self.assertEqual(response.status, 503)
+            response.read()
+            conn.close()
+        finally:
+            server.shutdown()
+            thread.join()
+            server.server_close()
+
     def test_unauthorized_and_invalid_are_not_stored(self):
         before = len(self.saved)
         self.assertEqual(self.request(LEAD, "wrong"), 401)
