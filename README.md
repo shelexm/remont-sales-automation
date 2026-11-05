@@ -14,7 +14,7 @@ python3 -m unittest discover -s tests -v
 
 Проверки проверяют наличие документов и правила игнорирования локальных секретов; CI дополнительно запускает линтер, проверку зависимостей инструментов и поиск секретов. Это не подтверждает работу n8n, CRM или приём заявки. Интеграционные и сквозные тесты будут добавлены вместе с реализацией.
 
-Приёмник и локальный запуск: [docs/lead-intake.md](docs/lead-intake.md). Тестовая CRM и предварительные адаптеры: [docs/integrations.md](docs/integrations.md). Схема и границы системы: [docs/architecture.md](docs/architecture.md). План и критерии: [docs/plan.md](docs/plan.md). Секреты задаются вне Git; шаблон переменных появится вместе с исполняемыми сервисами, чтобы не обещать несуществующие настройки.
+Приёмник и локальный запуск: [docs/lead-intake.md](docs/lead-intake.md). Тестовая CRM и предварительные адаптеры: [docs/integrations.md](docs/integrations.md). Материалы для Tilda: [docs/tilda/assembly.md](docs/tilda/assembly.md). Схема и границы системы: [docs/architecture.md](docs/architecture.md). План и критерии: [docs/plan.md](docs/plan.md). Секреты задаются вне Git; шаблон переменных появится вместе с исполняемыми сервисами, чтобы не обещать несуществующие настройки.
 
 ## Статус
 

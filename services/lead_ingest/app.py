@@ -9,6 +9,8 @@ from urllib.parse import parse_qsl
 
 MAX_BODY = 16384
 SERVICES = {"cosmetic", "capital", "design", "other"}
+SERVICE_LABELS = {"Косметический ремонт": "cosmetic", "Капитальный ремонт": "capital",
+                  "Ремонт по дизайн-проекту": "design", "Другое": "other"}
 
 
 class InvalidLead(ValueError):
@@ -37,7 +39,8 @@ def validate(data, threshold):
         digits = "7" + digits
     if len(digits) != 11 or digits[0] != "7" or digits[1] not in "3489":
         raise InvalidLead("Phone")
-    service = field("Service", 20)
+    service = field("Service", 64)
+    service = SERVICE_LABELS.get(service, service)
     if service not in SERVICES:
         raise InvalidLead("Service")
     try:
