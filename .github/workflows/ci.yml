@@ -1,0 +1,32 @@
+name: CI
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  foundation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install ruff==0.11.13 pip-audit==2.9.0
+      - run: ruff check tests
+      - run: python -m unittest discover -s tests -v
+      - run: python -m compileall -q tests
+      - name: Audit Python tooling dependencies
+        run: python -m pip_audit
+      - name: Check tracked files for private keys
+        run: |
+          marker="$(printf '%s%s' '-----BEGIN ' '(RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----')"
+          if git grep -n -I -E -- "$marker"; then
+            exit 1
+          fi
+      - name: Scan tracked content for secrets
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
