@@ -20,6 +20,14 @@ class LeadTests(unittest.TestCase):
         self.assertEqual(result["budget_class"], "high")
         self.assertEqual(validate({**LEAD, "Budget": "500"}, 1000000)["budget_class"], "low")
 
+    def test_tilda_russian_service_labels(self):
+        for label, code in (("Косметический ремонт", "cosmetic"),
+                            ("Капитальный ремонт", "capital"),
+                            ("Ремонт по дизайн-проекту", "design"),
+                            ("Другое", "other")):
+            with self.subTest(label=label):
+                self.assertEqual(validate({**LEAD, "Service": label}, 1000000)["service"], code)
+
     def test_missing_invalid_phone_and_consent(self):
         for override in ({"Name": ""}, {"Phone": "123"}, {"Consent": "no"}):
             with self.subTest(override=override), self.assertRaises(InvalidLead):
@@ -63,6 +71,10 @@ class WebhookTests(unittest.TestCase):
         self.assertEqual(len(self.saved), before)
         self.assertEqual(self.request(LEAD), 200)
         self.assertEqual(len(self.saved), before + 1)
+
+    def test_tilda_russian_service_is_normalized_after_post(self):
+        self.assertEqual(self.request({**LEAD, "Service": "Капитальный ремонт"}), 200)
+        self.assertEqual(self.saved[-1]["service"], "capital")
 
     def test_storage_failure_returns_503(self):
         def fail_store(dsn, lead):
