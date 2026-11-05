@@ -111,11 +111,20 @@ class EspoCRM:
         self.journal.found(entity, key, remote_id)
         return remote_id
 
+    def get_stage(self, remote_id):
+        if not isinstance(remote_id, str) or not remote_id.isalnum():
+            raise Permanent("invalid_crm_id")
+        result = self._call("GET", f"Opportunity/{remote_id}")
+        stage = result.get("stage") if isinstance(result, dict) else None
+        if not isinstance(stage, str) or not stage:
+            raise Permanent("invalid_crm_stage")
+        return stage
+
     def sync(self, case_id, lead):
         # A case-scoped contact avoids putting phone numbers in correlation keys.
         key = f"remont-case-{case_id}"
         contact = self._sync_entity("Contact", key, {"lastName": lead["name"], "phoneNumber": lead["phone"]})
-        deal = self._sync_entity("Opportunity", key, {"name": f"Ремонт #{case_id}", "amount": lead["budget"], "contactId": contact})
+        deal = self._sync_entity("Opportunity", key, {"name": f"Ремонт #{case_id}", "amount": lead["budget"], "contactsIds": [contact]})
         return CRMResult(contact, deal)
 
 

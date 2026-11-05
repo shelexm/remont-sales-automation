@@ -53,3 +53,10 @@ SELECT (SELECT count(*) FROM lead_events) AS received_events,
        (SELECT count(*) FROM demo_crm WHERE status = 'new') AS new_cases,
        (SELECT count(*) FROM integration_jobs WHERE status = 'failed') AS failed_jobs,
        (SELECT count(*) FROM integration_jobs WHERE status = 'uncertain') AS uncertain_jobs;
+CREATE TABLE IF NOT EXISTS crm_tracking (
+    case_id bigint PRIMARY KEY REFERENCES lead_cases(id),
+    remote_id text NOT NULL,
+    stage text,
+    checked_at timestamptz,
+    next_check_at timestamptz NOT NULL DEFAULT now()
+);

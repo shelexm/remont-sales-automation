@@ -24,7 +24,7 @@ class PostgreSQLTests(unittest.TestCase):
 
     def setUp(self):
         with self.psycopg.connect(DATABASE_URL) as conn:
-            conn.execute("TRUNCATE integration_jobs, demo_crm, crm_entities, lead_events, lead_cases RESTART IDENTITY CASCADE")
+            conn.execute("TRUNCATE integration_jobs, demo_crm, crm_entities, crm_tracking, lead_events, lead_cases RESTART IDENTITY CASCADE")
 
     def test_duplicate_and_changed_payload(self):
         from test_lead_ingest import LEAD, validate
@@ -134,6 +134,42 @@ class PostgreSQLTests(unittest.TestCase):
         with self.psycopg.connect(DATABASE_URL) as conn:
             stats = conn.execute("SELECT received_events, unique_cases, new_cases FROM demo_analytics").fetchone()
             self.assertEqual(stats, (1, 1, 1))
+
+    def test_espo_followup_checks_latest_stage_before_sending(self):
+        from app import save_lead
+        from test_lead_ingest import LEAD, validate
+        from providers import CRMResult, EspoCRM
+        from worker import deliver_once, enqueue_reminders, refresh_stage
+        class FakeEspo(EspoCRM):
+            def __init__(self):
+                self.stage = "Prospecting"
+            def sync(self, case_id, lead):
+                return CRMResult("c1", "o1")
+            def get_stage(self, remote_id):
+                return self.stage
+        class FakeTelegram:
+            def __init__(self):
+                self.reminders = 0
+            def notify(self, case_id, lead):
+                pass
+            def remind(self, case_id):
+                self.reminders += 1
+        save_lead(DATABASE_URL, validate(LEAD, 1000000))
+        with self.psycopg.connect(DATABASE_URL) as conn:
+            token = uuid.uuid4()
+            event = conn.execute("SELECT id FROM claim_lead(%s)", (token,)).fetchone()
+            case_id = conn.execute("SELECT result_case_id FROM process_lead(%s, %s)", (event[0], token)).fetchone()[0]
+            conn.execute("UPDATE lead_cases SET first_seen_at = now() - interval '2 hours'")
+        crm, telegram = FakeEspo(), FakeTelegram()
+        self.assertTrue(deliver_once(DATABASE_URL, crm, telegram))
+        self.assertTrue(deliver_once(DATABASE_URL, crm, telegram))
+        enqueue_reminders(DATABASE_URL, 60, "espocrm", "Prospecting")
+        self.assertFalse(deliver_once(DATABASE_URL, crm, telegram))
+        self.assertEqual(refresh_stage(DATABASE_URL, crm, case_id), "Prospecting")
+        enqueue_reminders(DATABASE_URL, 60, "espocrm", "Prospecting")
+        crm.stage = "Qualification"
+        self.assertTrue(deliver_once(DATABASE_URL, crm, telegram))
+        self.assertEqual(telegram.reminders, 0)
 
     def test_retry_and_ambiguous_telegram_are_recorded(self):
         from app import save_lead
