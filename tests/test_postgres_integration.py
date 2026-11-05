@@ -17,13 +17,14 @@ class PostgreSQLTests(unittest.TestCase):
     def setUpClass(cls):
         import psycopg
         cls.psycopg = psycopg
-        schema = (Path(__file__).resolve().parents[1] / "infra/postgres/001_schema.sql").read_text()
+        schema_dir = Path(__file__).resolve().parents[1] / "infra/postgres"
+        schema = "\n".join(p.read_text() for p in sorted(schema_dir.glob("*.sql")))
         with psycopg.connect(DATABASE_URL, autocommit=True) as conn:
             conn.execute(schema)
 
     def setUp(self):
         with self.psycopg.connect(DATABASE_URL) as conn:
-            conn.execute("TRUNCATE lead_events, lead_cases RESTART IDENTITY")
+            conn.execute("TRUNCATE integration_jobs, demo_crm, crm_entities, lead_events, lead_cases RESTART IDENTITY CASCADE")
 
     def test_duplicate_and_changed_payload(self):
         from test_lead_ingest import LEAD, validate
@@ -100,6 +101,63 @@ class PostgreSQLTests(unittest.TestCase):
             self.assertEqual(conn.execute("SELECT occurrences FROM lead_cases").fetchone()[0], 2)
             self.assertEqual(conn.execute("SELECT count(*) FROM lead_cases").fetchone()[0], 1)
             self.assertEqual(conn.execute("SELECT count(*) FROM lead_events WHERE status = 'completed'").fetchone()[0], 2)
+
+    def test_demo_crm_delivery_telegram_and_followup(self):
+        from app import save_lead
+        from test_lead_ingest import LEAD, validate
+        from worker import DemoCRM, deliver_once, enqueue_reminders
+        lead = validate(LEAD, 1000000)
+        save_lead(DATABASE_URL, lead)
+        with self.psycopg.connect(DATABASE_URL) as conn:
+            token = uuid.uuid4()
+            event = conn.execute("SELECT id FROM claim_lead(%s)", (token,)).fetchone()
+            case = conn.execute("SELECT result_case_id FROM process_lead(%s, %s)", (event[0], token)).fetchone()[0]
+        class FakeTelegram:
+            def __init__(self):
+                self.sent = []
+            def notify(self, case_id, payload):
+                self.sent.append(("new", case_id))
+            def remind(self, case_id):
+                self.sent.append(("reminder", case_id))
+        telegram = FakeTelegram()
+        crm = DemoCRM(DATABASE_URL)
+        self.assertTrue(deliver_once(DATABASE_URL, crm, telegram))
+        self.assertTrue(deliver_once(DATABASE_URL, crm, telegram))
+        with self.psycopg.connect(DATABASE_URL) as conn:
+            self.assertEqual(conn.execute("SELECT count(*) FROM demo_crm").fetchone()[0], 1)
+            conn.execute("UPDATE lead_cases SET first_seen_at = now() - interval '2 hours'")
+        enqueue_reminders(DATABASE_URL, 60)
+        enqueue_reminders(DATABASE_URL, 60)
+        self.assertTrue(deliver_once(DATABASE_URL, crm, telegram))
+        self.assertEqual(telegram.sent, [("new", case), ("reminder", case)])
+        self.assertFalse(deliver_once(DATABASE_URL, crm, telegram))
+        with self.psycopg.connect(DATABASE_URL) as conn:
+            stats = conn.execute("SELECT received_events, unique_cases, new_cases FROM demo_analytics").fetchone()
+            self.assertEqual(stats, (1, 1, 1))
+
+    def test_retry_and_ambiguous_telegram_are_recorded(self):
+        from app import save_lead
+        from test_lead_ingest import LEAD, validate
+        from worker import DemoCRM, deliver_once
+        from providers import Retryable, Uncertain
+        save_lead(DATABASE_URL, validate(LEAD, 1000000))
+        with self.psycopg.connect(DATABASE_URL) as conn:
+            token = uuid.uuid4()
+            event = conn.execute("SELECT id FROM claim_lead(%s)", (token,)).fetchone()
+            conn.execute("SELECT * FROM process_lead(%s, %s)", (event[0], token))
+        class FailingCRM:
+            def sync(self, case_id, lead):
+                raise Retryable("rate_limited", 120)
+        class UncertainTelegram:
+            def notify(self, case_id, lead):
+                raise Uncertain("timeout")
+        self.assertTrue(deliver_once(DATABASE_URL, FailingCRM(), UncertainTelegram()))
+        self.assertTrue(deliver_once(DATABASE_URL, DemoCRM(DATABASE_URL), UncertainTelegram()))
+        with self.psycopg.connect(DATABASE_URL) as conn:
+            rows = conn.execute("SELECT destination, status FROM integration_jobs ORDER BY destination").fetchall()
+            self.assertEqual(rows, [("crm", "pending"), ("telegram", "uncertain")])
+            delay = conn.execute("SELECT extract(epoch FROM (available_at - now())) FROM integration_jobs WHERE destination = 'crm'").fetchone()[0]
+            self.assertGreater(delay, 100)
 
     def test_storage_failure_does_not_report_success(self):
         from app import save_lead

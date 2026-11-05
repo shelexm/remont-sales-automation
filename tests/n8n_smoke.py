@@ -17,7 +17,7 @@ for node in workflow["nodes"][1:]:
 credential = [{"id": "testPostgres", "name": "testPostgres", "type": "postgres", "data": {
     "host": "127.0.0.1", "port": 5432, "database": "test", "user": "test", "password": "test", "ssl": "disable"}}]
 with psycopg.connect(dsn) as conn:
-    conn.execute("TRUNCATE lead_events, lead_cases RESTART IDENTITY")
+    conn.execute("TRUNCATE integration_jobs, demo_crm, lead_events, lead_cases RESTART IDENTITY CASCADE")
     conn.execute("""INSERT INTO lead_events(source_id, payload_hash, payload)
         VALUES ('smoke', %s, '{"phone":"+79991234567","service":"capital"}')""", ("a" * 64,))
 with tempfile.TemporaryDirectory() as tmp:

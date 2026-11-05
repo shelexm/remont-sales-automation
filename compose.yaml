@@ -9,6 +9,7 @@ services:
     volumes:
       - remont-db:/var/lib/postgresql/data
       - ./infra/postgres/001_schema.sql:/docker-entrypoint-initdb.d/001_schema.sql:ro
+      - ./infra/postgres/002_integrations.sql:/docker-entrypoint-initdb.d/002_integrations.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U remont -d remont"]
       interval: 5s
@@ -25,6 +26,23 @@ services:
       HIGH_BUDGET_THRESHOLD: ${HIGH_BUDGET_THRESHOLD:-1000000}
     ports:
       - "127.0.0.1:18080:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+  integrations:
+    build:
+      context: .
+      dockerfile: services/integrations/Dockerfile
+    environment:
+      DATABASE_URL: postgresql://remont:${POSTGRES_PASSWORD}@db:5432/remont
+      CRM_PROVIDER: ${CRM_PROVIDER:-demo}
+      ESPO_URL: ${ESPO_URL:-}
+      ESPO_API_KEY: ${ESPO_API_KEY:-}
+      TELEGRAM_ENABLED: ${TELEGRAM_ENABLED:-false}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+      FOLLOWUP_MINUTES: ${FOLLOWUP_MINUTES:-60}
     depends_on:
       db:
         condition: service_healthy
