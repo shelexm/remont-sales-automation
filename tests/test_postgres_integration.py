@@ -1,12 +1,13 @@
 import os
 import http.client
+import subprocess
+import sys
 import threading
 from http.server import ThreadingHTTPServer
 from urllib.parse import urlencode
 from concurrent.futures import ThreadPoolExecutor
 import unittest
 import uuid
-from pathlib import Path
 
 DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
 
@@ -17,10 +18,8 @@ class PostgreSQLTests(unittest.TestCase):
     def setUpClass(cls):
         import psycopg
         cls.psycopg = psycopg
-        schema_dir = Path(__file__).resolve().parents[1] / "infra/postgres"
-        schema = "\n".join(p.read_text() for p in sorted(schema_dir.glob("*.sql")))
-        with psycopg.connect(DATABASE_URL, autocommit=True) as conn:
-            conn.execute(schema)
+        env = {**os.environ, "DATABASE_URL": DATABASE_URL}
+        subprocess.run([sys.executable, "-m", "alembic", "upgrade", "head"], env=env, check=True)
 
     def setUp(self):
         with self.psycopg.connect(DATABASE_URL) as conn:
@@ -28,7 +27,7 @@ class PostgreSQLTests(unittest.TestCase):
 
     def test_duplicate_and_changed_payload(self):
         from test_lead_ingest import LEAD, validate
-        from app import save_lead
+        from app.db.leads import save_lead
         lead = validate(LEAD, 1000000)
         self.assertEqual(save_lead(DATABASE_URL, lead), "created")
         self.assertEqual(save_lead(DATABASE_URL, lead), "duplicate")
@@ -38,7 +37,7 @@ class PostgreSQLTests(unittest.TestCase):
 
     def test_concurrent_delivery_is_idempotent(self):
         from test_lead_ingest import LEAD, validate
-        from app import save_lead
+        from app.db.leads import save_lead
         lead = validate(LEAD, 1000000)
         with ThreadPoolExecutor(max_workers=8) as pool:
             results = list(pool.map(lambda _: save_lead(DATABASE_URL, lead), range(8)))
@@ -60,7 +59,7 @@ class PostgreSQLTests(unittest.TestCase):
             self.assertEqual(conn.execute("SELECT status FROM lead_events").fetchone()[0], "failed")
 
     def test_http_persists_across_receiver_restart(self):
-        from app import make_handler
+        from app.api.webhook import make_handler
         from test_lead_ingest import LEAD, TOKEN
 
         def send():
@@ -86,7 +85,7 @@ class PostgreSQLTests(unittest.TestCase):
             self.assertEqual(conn.execute("SELECT count(*) FROM lead_events").fetchone()[0], 1)
 
     def test_same_customer_and_service_within_day_creates_one_case(self):
-        from app import save_lead
+        from app.db.leads import save_lead
         from test_lead_ingest import LEAD, validate
         lead = validate(LEAD, 1000000)
         self.assertEqual(save_lead(DATABASE_URL, lead), "created")
@@ -103,9 +102,9 @@ class PostgreSQLTests(unittest.TestCase):
             self.assertEqual(conn.execute("SELECT count(*) FROM lead_events WHERE status = 'completed'").fetchone()[0], 2)
 
     def test_demo_crm_delivery_telegram_and_followup(self):
-        from app import save_lead
+        from app.db.leads import save_lead
         from test_lead_ingest import LEAD, validate
-        from worker import DemoCRM, deliver_once, enqueue_reminders
+        from app.integrations.worker import DemoCRM, deliver_once, enqueue_reminders
         lead = validate(LEAD, 1000000)
         save_lead(DATABASE_URL, lead)
         with self.psycopg.connect(DATABASE_URL) as conn:
@@ -136,10 +135,10 @@ class PostgreSQLTests(unittest.TestCase):
             self.assertEqual(stats, (1, 1, 1))
 
     def test_espo_followup_checks_latest_stage_before_sending(self):
-        from app import save_lead
+        from app.db.leads import save_lead
         from test_lead_ingest import LEAD, validate
-        from providers import CRMResult, EspoCRM
-        from worker import deliver_once, enqueue_reminders, refresh_stage
+        from app.integrations.providers import CRMResult, EspoCRM
+        from app.integrations.worker import deliver_once, enqueue_reminders, refresh_stage
         class FakeEspo(EspoCRM):
             def __init__(self):
                 self.stage = "Prospecting"
@@ -172,10 +171,10 @@ class PostgreSQLTests(unittest.TestCase):
         self.assertEqual(telegram.reminders, 0)
 
     def test_retry_and_ambiguous_telegram_are_recorded(self):
-        from app import save_lead
+        from app.db.leads import save_lead
         from test_lead_ingest import LEAD, validate
-        from worker import DemoCRM, deliver_once
-        from providers import Retryable, Uncertain
+        from app.integrations.worker import DemoCRM, deliver_once
+        from app.integrations.providers import Retryable, Uncertain
         save_lead(DATABASE_URL, validate(LEAD, 1000000))
         with self.psycopg.connect(DATABASE_URL) as conn:
             token = uuid.uuid4()
@@ -196,7 +195,7 @@ class PostgreSQLTests(unittest.TestCase):
             self.assertGreater(delay, 100)
 
     def test_storage_failure_does_not_report_success(self):
-        from app import save_lead
+        from app.db.leads import save_lead
         from test_lead_ingest import LEAD, validate
         with self.assertRaises(Exception):
             save_lead("postgresql://bad:bad@127.0.0.1:1/missing", validate(LEAD, 1))

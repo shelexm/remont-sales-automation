@@ -8,18 +8,23 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
     volumes:
       - remont-db:/var/lib/postgresql/data
-      - ./infra/postgres/001_schema.sql:/docker-entrypoint-initdb.d/001_schema.sql:ro
-      - ./infra/postgres/002_integrations.sql:/docker-entrypoint-initdb.d/002_integrations.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U remont -d remont"]
       interval: 5s
       timeout: 3s
       retries: 12
     restart: unless-stopped
+  migrate:
+    build: .
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      DATABASE_URL: postgresql://remont:${POSTGRES_PASSWORD}@db:5432/remont
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
   receiver:
-    build:
-      context: .
-      dockerfile: services/lead_ingest/Dockerfile
+    build: .
     environment:
       DATABASE_URL: postgresql://remont:${POSTGRES_PASSWORD}@db:5432/remont
       WEBHOOK_KEY: ${WEBHOOK_KEY:?Set WEBHOOK_KEY}
@@ -27,13 +32,12 @@ services:
     ports:
       - "127.0.0.1:18080:8080"
     depends_on:
-      db:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     restart: unless-stopped
   integrations:
-    build:
-      context: .
-      dockerfile: services/integrations/Dockerfile
+    build: .
+    command: ["python", "-u", "-m", "app.integrations.worker"]
     environment:
       DATABASE_URL: postgresql://remont:${POSTGRES_PASSWORD}@db:5432/remont
       CRM_PROVIDER: ${CRM_PROVIDER:-demo}
@@ -46,8 +50,8 @@ services:
       TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
       FOLLOWUP_MINUTES: ${FOLLOWUP_MINUTES:-60}
     depends_on:
-      db:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     restart: unless-stopped
 volumes:
   remont-db:
