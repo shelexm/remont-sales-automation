@@ -1,13 +1,11 @@
 import http.client
-import sys
 import threading
 import unittest
-from pathlib import Path
 from urllib.parse import urlencode
 from http.server import ThreadingHTTPServer
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "services" / "lead_ingest"))
-from app import InvalidLead, fingerprint, make_handler, validate  # noqa: E402
+from app.api.webhook import make_handler
+from app.core.leads import InvalidLead, fingerprint, validate
 
 TOKEN = "a" * 32
 LEAD = {"tranid": "123:456", "Name": "Тест", "Phone": "8 (999) 123-45-67", "Service": "capital", "Area": "65", "Budget": "1200000", "Consent": "yes"}
