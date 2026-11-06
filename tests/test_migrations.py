@@ -8,6 +8,10 @@ import uuid
 
 import psycopg
 from psycopg import sql
+from sqlalchemy import create_engine, inspect
+from sqlalchemy.engine import make_url
+
+from app.db.models import Base
 
 TEST_DSN = os.getenv("TEST_DATABASE_URL")
 ROOT = Path(__file__).resolve().parents[1]
@@ -56,3 +60,26 @@ class MigrationTests(unittest.TestCase):
         with self.connection() as conn:
             self.assertEqual(conn.execute("SELECT count(*) FROM lead_events").fetchone()[0], 1)
             self.assertIsNotNone(conn.execute("SELECT to_regclass('integration_jobs')").fetchone()[0])
+
+    def test_mapped_tables_match_migrated_columns_and_foreign_keys(self):
+        self.migrate("head")
+        engine = create_engine(make_url(TEST_DSN).set(drivername="postgresql+psycopg"),
+                               connect_args={"options": "-c search_path=" + self.schema})
+        try:
+            inspector = inspect(engine)
+            for name, table in Base.metadata.tables.items():
+                with self.subTest(table=name):
+                    columns = {column["name"]: column for column in inspector.get_columns(name)}
+                    self.assertEqual(set(columns), set(table.columns.keys()))
+                    for column in table.columns:
+                        self.assertEqual(columns[column.name]["nullable"], column.nullable, column.name)
+                    expected_fks = {(fk.parent.name, fk.column.table.name, fk.column.name)
+                                    for fk in table.foreign_keys}
+                    actual_fks = {(local, fk["referred_table"], remote)
+                                  for fk in inspector.get_foreign_keys(name)
+                                  for local, remote in zip(fk["constrained_columns"], fk["referred_columns"])}
+                    self.assertEqual(actual_fks, expected_fks)
+                    self.assertEqual(set(inspector.get_pk_constraint(name)["constrained_columns"]),
+                                     {column.name for column in table.primary_key})
+        finally:
+            engine.dispose()
