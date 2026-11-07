@@ -63,6 +63,59 @@ class PostgreSQLTests(unittest.TestCase):
         self.assertEqual(report["integrations"]["telegram"]["uncertain"], 1)
         self.assertNotIn("phone", str(report))
 
+    def test_reconciliation_is_atomic_audited_and_single_use(self):
+        from app.reconcile import confirm_telegram, list_uncertain
+        from app.db.leads import save_lead
+        from test_lead_ingest import LEAD, validate
+        save_lead(DATABASE_URL, validate(LEAD, 1000000))
+        with self.psycopg.connect(DATABASE_URL) as conn:
+            token = uuid.uuid4()
+            event = conn.execute("SELECT id FROM claim_lead(%s)", (token,)).fetchone()
+            conn.execute("SELECT * FROM process_lead(%s, %s)", (event[0], token))
+            conn.execute("UPDATE integration_jobs SET status = 'uncertain'")
+            jobs = dict(conn.execute("SELECT destination, id FROM integration_jobs").fetchall())
+        self.assertEqual(len(list_uncertain(DATABASE_URL)), 2)
+        with self.assertRaises(ValueError):
+            confirm_telegram(DATABASE_URL, jobs["crm"], "operator")
+        with self.assertRaises(ValueError):
+            confirm_telegram(DATABASE_URL, jobs["telegram"], "unsafe operator")
+
+        def attempt():
+            try:
+                confirm_telegram(DATABASE_URL, jobs["telegram"], "operator")
+                return "recorded"
+            except ValueError:
+                return "rejected"
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(lambda _: attempt(), range(2)))
+        self.assertCountEqual(results, ["recorded", "rejected"])
+        with self.psycopg.connect(DATABASE_URL) as conn:
+            self.assertEqual(conn.execute("SELECT status FROM integration_jobs WHERE id=%s", (jobs["telegram"],)).fetchone()[0], "done")
+            audit = conn.execute("SELECT decision, evidence, operator FROM integration_resolutions WHERE job_id=%s",
+                                 (jobs["telegram"],)).fetchall()
+            self.assertEqual(audit, [("confirmed_delivered", "telegram_chat", "operator")])
+            self.assertEqual(conn.execute("SELECT status FROM integration_jobs WHERE id=%s", (jobs["crm"],)).fetchone()[0], "uncertain")
+
+    def test_reconciliation_refuses_duplicate_case_message(self):
+        from app.reconcile import confirm_telegram
+        from app.db.leads import save_lead
+        from test_lead_ingest import LEAD, validate
+        lead = validate(LEAD, 1000000)
+        save_lead(DATABASE_URL, lead)
+        save_lead(DATABASE_URL, {**lead, "source_id": "second-event"})
+        with self.psycopg.connect(DATABASE_URL) as conn:
+            for _ in range(2):
+                token = uuid.uuid4()
+                event = conn.execute("SELECT id FROM claim_lead(%s)", (token,)).fetchone()
+                conn.execute("SELECT * FROM process_lead(%s, %s)", (event[0], token))
+            conn.execute("UPDATE integration_jobs SET status='uncertain' WHERE destination='telegram'")
+            job = conn.execute("SELECT min(id) FROM integration_jobs WHERE destination='telegram'").fetchone()[0]
+        with self.assertRaisesRegex(ValueError, "Multiple matching jobs"):
+            confirm_telegram(DATABASE_URL, job, "operator")
+        with self.psycopg.connect(DATABASE_URL) as conn:
+            self.assertEqual(conn.execute("SELECT count(*) FROM integration_resolutions").fetchone()[0], 0)
+
     def test_duplicate_and_changed_payload(self):
         from test_lead_ingest import LEAD, validate
         from app.db.leads import save_lead

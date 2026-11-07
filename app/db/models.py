@@ -72,6 +72,23 @@ class IntegrationJob(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("now()"))
 
 
+class IntegrationResolution(Base):
+    __tablename__ = "integration_resolutions"
+    __table_args__ = (
+        CheckConstraint("decision = 'confirmed_delivered'"),
+        CheckConstraint("evidence = 'telegram_chat'"),
+        CheckConstraint("operator ~ '^[A-Za-z0-9_.-]{1,32}$'"),
+        UniqueConstraint("job_id"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+    job_id: Mapped[int] = mapped_column(ForeignKey("integration_jobs.id"))
+    decision: Mapped[str] = mapped_column(Text)
+    evidence: Mapped[str] = mapped_column(Text)
+    operator: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("now()"))
+
+
 class CRMEntity(Base):
     __tablename__ = "crm_entities"
 
