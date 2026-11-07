@@ -35,6 +35,7 @@ jobs:
       - run: python -m json.tool workflows/process-leads.json > /dev/null
       - name: Validate local demo Compose configuration
         run: |
+          docker compose --env-file .env.example --profile monitor config --quiet
           docker compose --env-file infra/local-demo/env.example -f infra/local-demo/crm-compose.yaml config --quiet
           docker compose --env-file infra/local-demo/env.example -f infra/local-demo/compose.yaml config --quiet
           docker compose -p remont-trial --env-file .env.example --env-file infra/local-demo/env.example -f compose.yaml -f infra/local-demo/integrations-override.yaml config --quiet
