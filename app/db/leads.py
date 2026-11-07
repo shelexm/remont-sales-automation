@@ -13,7 +13,15 @@ from app.db.models import LeadEvent
 @lru_cache(maxsize=4)
 def _engine(dsn):
     url = make_url(dsn).set(drivername="postgresql+psycopg")
-    return create_engine(url, pool_pre_ping=True, connect_args={"connect_timeout": 2})
+    return create_engine(url, pool_pre_ping=True, pool_timeout=2, connect_args={"connect_timeout": 2})
+
+
+def database_ready(dsn):
+    """Confirm that PostgreSQL and the inbox table are readable within a short deadline."""
+    with _engine(dsn).connect() as conn:
+        conn.execute(text("SET LOCAL statement_timeout = '2s'"))
+        conn.execute(select(LeadEvent.id).limit(1)).all()
+    return True
 
 def save_lead(dsn, lead):
     digest = fingerprint(lead)

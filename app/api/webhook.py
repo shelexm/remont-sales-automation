@@ -1,16 +1,25 @@
 """Tilda webhook transport; technical logs never include form content."""
 import hmac
+import ipaddress
 import json
 import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qsl
 
 from app.core.leads import InvalidLead, validate
-from app.db.leads import save_lead
+from app.db.leads import database_ready, save_lead
 
 MAX_BODY = 16384
 
-def make_handler(dsn, token, threshold, store=save_lead):
+
+def is_loopback_address(address):
+    try:
+        return ipaddress.ip_address(address).is_loopback
+    except ValueError:
+        return False
+
+
+def make_handler(dsn, token, threshold, store=save_lead, ready=database_ready):
     class Handler(BaseHTTPRequestHandler):
         server_version = "LeadReceiver"
         sys_version = ""
@@ -28,7 +37,17 @@ def make_handler(dsn, token, threshold, store=save_lead):
             self.wfile.write(body)
 
         def do_GET(self):
-            self.reply(200 if self.path == "/health" else 404, {"status": "ok"} if self.path == "/health" else {"error": "not_found"})
+            if self.path == "/health":
+                return self.reply(200, {"status": "ok"})
+            if self.path == "/ready":
+                if not is_loopback_address(self.client_address[0]):
+                    return self.reply(404, {"error": "not_found"})
+                try:
+                    ok = bool(ready(dsn))
+                except Exception:
+                    ok = False
+                return self.reply(200 if ok else 503, {"status": "ready" if ok else "not_ready"})
+            return self.reply(404, {"error": "not_found"})
 
         def do_POST(self):
             if self.path != "/webhook/tilda":
