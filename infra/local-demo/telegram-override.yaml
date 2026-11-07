@@ -1,0 +1,6 @@
+services:
+  integrations:
+    environment:
+      TELEGRAM_ENABLED: 'true'
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:?}
