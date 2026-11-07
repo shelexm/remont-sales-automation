@@ -44,6 +44,28 @@ try:
             raise AssertionError("Restore with incorrect key was accepted")
         if "test-value-only" in incorrect.stderr or "test-key-incorrect" in incorrect.stderr:
             raise AssertionError("Restore failure exposed test credentials or key")
+        keydir = Path(directory) / "keys"
+        made_key = subprocess.run([sys.executable, str(ROOT / "infra/backup/backup_n8n_key.py"),
+                                   "--container", source, "--output-dir", str(keydir)],
+                                  capture_output=True, text=True, timeout=30)
+        keyfiles = list(keydir.glob("*.key"))
+        if made_key.returncode or len(keyfiles) != 1 or "test-key-correct" in made_key.stdout:
+            raise AssertionError("Key backup was not created safely")
+        if keydir.stat().st_mode & 0o777 != 0o700 or keyfiles[0].stat().st_mode & 0o777 != 0o600:
+            raise AssertionError("Key directory or file is not private")
+        key_command = [sys.executable, str(ROOT / "infra/backup/verify_n8n_restore.py"), str(archives[0]), "--key-file"]
+        restored = subprocess.run([*key_command, str(keyfiles[0])], capture_output=True, text=True, timeout=300)
+        if restored.returncode or "decrypted_credentials=1" not in restored.stdout:
+            raise AssertionError("Restore with backed up key failed")
+        link = keydir / "link.key"
+        link.symlink_to(keyfiles[0])
+        symlink = subprocess.run([*key_command, str(link)], capture_output=True, text=True, timeout=30)
+        if symlink.returncode == 0:
+            raise AssertionError("Symlink key was accepted")
+        keyfiles[0].chmod(0o644)
+        unsafe = subprocess.run([*key_command, str(keyfiles[0])], capture_output=True, text=True, timeout=30)
+        if unsafe.returncode == 0:
+            raise AssertionError("Nonprivate key was accepted")
     print("Isolated n8n restore accepted the correct key and rejected an incorrect key")
 finally:
     for container in started:
