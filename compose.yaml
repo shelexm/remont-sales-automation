@@ -47,6 +47,8 @@ services:
     environment:
       DATABASE_URL: postgresql://remont:${POSTGRES_PASSWORD}@db:5432/remont
       CRM_PROVIDER: ${CRM_PROVIDER:-demo}
+      CRM_ADOPT_EXISTING: ${CRM_ADOPT_EXISTING:-false}
+      CRM_ADOPT_MIXED_HISTORY: ${CRM_ADOPT_MIXED_HISTORY:-false}
       ESPO_URL: ${ESPO_URL:-}
       ESPO_API_KEY: ${ESPO_API_KEY:-}
       ESPO_ASSIGNED_USER_ID: ${ESPO_ASSIGNED_USER_ID:-}

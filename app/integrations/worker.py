@@ -1,5 +1,6 @@
 """Delivery worker. Operates only on an explicitly configured PostgreSQL database."""
 import json
+import hashlib
 import os
 import time
 import uuid
@@ -7,7 +8,8 @@ import uuid
 import psycopg
 
 from app.integrations.providers import EspoCRM, Permanent, Retryable, Telegram, Uncertain
-from app.db.integrations import DemoCRM, Journal, claim, finish
+from app.integrations.bitrix import BitrixCRM
+from app.db.integrations import DemoCRM, Journal, claim, ensure_provider_binding, finish
 
 
 def deliver_once(dsn, crm=None, telegram=None, unprocessed_stage="Prospecting"):
@@ -22,13 +24,13 @@ def deliver_once(dsn, crm=None, telegram=None, unprocessed_stage="Prospecting"):
     try:
         if destination == "crm":
             result = crm.sync(case_id, lead)
-            if isinstance(crm, EspoCRM):
+            if isinstance(crm, (EspoCRM, BitrixCRM)):
                 with psycopg.connect(dsn, connect_timeout=3) as conn:
                     conn.execute("""INSERT INTO crm_tracking(case_id, remote_id) VALUES (%s, %s)
                         ON CONFLICT (case_id) DO UPDATE SET remote_id = EXCLUDED.remote_id,
                         next_check_at = now()""", (case_id, result.deal_id))
         elif destination == "telegram_reminder":
-            if isinstance(crm, EspoCRM):
+            if isinstance(crm, (EspoCRM, BitrixCRM)):
                 stage = refresh_stage(dsn, crm, case_id)
                 should_remind = stage == unprocessed_stage
             else:
@@ -101,18 +103,30 @@ def main():
     provider = os.environ.get("CRM_PROVIDER", "demo")
     if provider == "demo":
         crm = DemoCRM(dsn)
+        identity = "local"
     elif provider == "espocrm":
         crm = EspoCRM(os.environ["ESPO_URL"], os.environ["ESPO_API_KEY"], Journal(dsn), os.environ["ESPO_ASSIGNED_USER_ID"])
+        identity = hashlib.sha256(crm.root.encode()).hexdigest()
+    elif provider == "bitrix24":
+        crm = BitrixCRM(os.environ["BITRIX_WEBHOOK_URL"], os.environ["BITRIX_CONTACT_FIELD"],
+                        os.environ["BITRIX_DEAL_FIELD"], os.environ["BITRIX_INSTALLATION_ID"], Journal(dsn))
+        identity = crm.entities["deal"]
     else:
         raise ValueError("Unsupported CRM_PROVIDER")
     telegram = None
     if os.environ.get("TELEGRAM_ENABLED", "false").lower() == "true":
         telegram = Telegram(os.environ["TELEGRAM_BOT_TOKEN"], os.environ["TELEGRAM_CHAT_ID"])
+    if provider == "bitrix24" and telegram and not os.environ.get("BITRIX_UNPROCESSED_STAGE"):
+        raise ValueError("BITRIX_UNPROCESSED_STAGE is required when Telegram reminders are enabled")
+    ensure_provider_binding(dsn, provider, identity,
+                            adopt_legacy=os.environ.get("CRM_ADOPT_EXISTING", "false").lower() == "true",
+                            adopt_mixed=os.environ.get("CRM_ADOPT_MIXED_HISTORY", "false").lower() == "true")
     while True:
         try:
-            unprocessed_stage = os.environ.get("ESPO_UNPROCESSED_STAGE", "Prospecting")
+            unprocessed_stage = (os.environ.get("BITRIX_UNPROCESSED_STAGE", "") if provider == "bitrix24"
+                                 else os.environ.get("ESPO_UNPROCESSED_STAGE", "Prospecting"))
             if telegram:
-                if provider == "espocrm":
+                if provider in ("espocrm", "bitrix24"):
                     refresh_one_due(dsn, crm)
                 enqueue_reminders(dsn, int(os.environ.get("FOLLOWUP_MINUTES", "60")), provider, unprocessed_stage)
             if not deliver_once(dsn, crm, telegram, unprocessed_stage):

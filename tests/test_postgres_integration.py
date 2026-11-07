@@ -3,6 +3,7 @@ import http.client
 import subprocess
 import sys
 import threading
+import time
 from http.server import ThreadingHTTPServer
 from urllib.parse import urlencode
 from concurrent.futures import ThreadPoolExecutor
@@ -30,6 +31,143 @@ class PostgreSQLTests(unittest.TestCase):
         self.assertTrue(database_ready(DATABASE_URL))
         with self.assertRaises(Exception):
             database_ready("postgresql://bad:bad@127.0.0.1:1/missing")
+
+    def test_provider_binding_prevents_switch_and_cross_account_reuse(self):
+        from app.db.integrations import ensure_provider_binding
+        ensure_provider_binding(DATABASE_URL, "bitrix24", "account-a")
+        ensure_provider_binding(DATABASE_URL, "bitrix24", "account-a")
+        for provider, identity in (("bitrix24", "account-b"), ("espocrm", "account-a"), ("demo", "local")):
+            with self.subTest(provider=provider, identity=identity), self.assertRaises(ValueError):
+                ensure_provider_binding(DATABASE_URL, provider, identity, adopt_legacy=True)
+
+    def test_bitrix_cannot_adopt_existing_unbound_crm_history(self):
+        from app.db.integrations import ensure_provider_binding
+        with self.psycopg.connect(DATABASE_URL) as conn:
+            conn.execute("INSERT INTO crm_entities(entity_type, external_key, create_started) VALUES ('Contact','old',true)")
+        with self.assertRaises(ValueError):
+            ensure_provider_binding(DATABASE_URL, "bitrix24", "account-a", adopt_legacy=True)
+        with self.assertRaises(ValueError):
+            ensure_provider_binding(DATABASE_URL, "espocrm", "account-a")
+        ensure_provider_binding(DATABASE_URL, "espocrm", "account-a", adopt_legacy=True)
+        with self.assertRaises(ValueError):
+            ensure_provider_binding(DATABASE_URL, "bitrix24", "account-a")
+
+    def test_concurrent_provider_binding_has_only_one_winner(self):
+        from app.db.integrations import ensure_provider_binding
+
+        def bind(provider):
+            try:
+                ensure_provider_binding(DATABASE_URL, provider, "account")
+                return "ok"
+            except ValueError:
+                return "rejected"
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(bind, ["demo", "bitrix24"]))
+        self.assertCountEqual(results, ["ok", "rejected"])
+
+    def test_unrecognized_journal_is_not_adopted(self):
+        from app.db.integrations import ensure_provider_binding
+        with self.psycopg.connect(DATABASE_URL) as conn:
+            conn.execute("INSERT INTO crm_entities(entity_type, external_key, create_started) VALUES ('other-provider','old',true)")
+        for provider in ("demo", "espocrm", "bitrix24"):
+            with self.subTest(provider=provider), self.assertRaises(ValueError):
+                ensure_provider_binding(DATABASE_URL, provider, "account", adopt_legacy=True, adopt_mixed=True)
+
+    def test_mixed_legacy_history_needs_separate_acknowledgement(self):
+        from app.db.integrations import DemoCRM, ensure_provider_binding
+        from app.db.leads import save_lead
+        from test_lead_ingest import LEAD, validate
+        lead = validate(LEAD, 1000000)
+        save_lead(DATABASE_URL, lead)
+        with self.psycopg.connect(DATABASE_URL) as conn:
+            token = uuid.uuid4()
+            event = conn.execute("SELECT id FROM claim_lead(%s)", (token,)).fetchone()
+            case = conn.execute("SELECT result_case_id FROM process_lead(%s, %s)", (event[0], token)).fetchone()[0]
+        DemoCRM(DATABASE_URL).sync(case, lead)
+        with self.assertRaises(ValueError):
+            ensure_provider_binding(DATABASE_URL, "espocrm", "account-a", adopt_legacy=True)
+        with self.assertRaises(ValueError):
+            ensure_provider_binding(DATABASE_URL, "bitrix24", "account-a", adopt_legacy=True, adopt_mixed=True)
+        ensure_provider_binding(DATABASE_URL, "espocrm", "account-a", adopt_legacy=True, adopt_mixed=True)
+        with self.psycopg.connect(DATABASE_URL) as conn:
+            self.assertEqual(conn.execute("SELECT count(*) FROM demo_crm").fetchone()[0], 1)
+
+    def test_bitrix_jobs_refresh_stage_and_create_reminder(self):
+        from app.db.leads import save_lead
+        from app.integrations.bitrix import BitrixCRM
+        from app.integrations.providers import CRMResult
+        from app.integrations.worker import deliver_once, enqueue_reminders, refresh_stage
+        from test_lead_ingest import LEAD, validate
+
+        class FakeBitrix(BitrixCRM):
+            def __init__(self):
+                pass
+
+            def sync(self, case_id, lead):
+                return CRMResult("101", "202")
+
+            def get_stage(self, deal_id):
+                self.last_deal = deal_id
+                return "NEW"
+
+        class FakeTelegram:
+            def __init__(self):
+                self.reminders = []
+
+            def remind(self, case_id):
+                self.reminders.append(case_id)
+
+        save_lead(DATABASE_URL, validate(LEAD, 1000000))
+        with self.psycopg.connect(DATABASE_URL) as conn:
+            token = uuid.uuid4()
+            event = conn.execute("SELECT id FROM claim_lead(%s)", (token,)).fetchone()
+            case = conn.execute("SELECT result_case_id FROM process_lead(%s, %s)", (event[0], token)).fetchone()[0]
+        crm, telegram = FakeBitrix(), FakeTelegram()
+        self.assertTrue(deliver_once(DATABASE_URL, crm, None))
+        self.assertEqual(refresh_stage(DATABASE_URL, crm, case), "NEW")
+        self.assertEqual(crm.last_deal, "202")
+        with self.psycopg.connect(DATABASE_URL) as conn:
+            conn.execute("UPDATE lead_cases SET first_seen_at=now()-interval '2 hours'")
+            conn.execute("UPDATE integration_jobs SET status='done' WHERE destination='telegram'")
+        enqueue_reminders(DATABASE_URL, 60, "bitrix24", "NEW")
+        self.assertTrue(deliver_once(DATABASE_URL, crm, telegram, "NEW"))
+        self.assertEqual(telegram.reminders, [case])
+
+    def test_bitrix_worker_starts_only_after_binding_and_requires_stage_for_reminders(self):
+        env = {**os.environ, "DATABASE_URL": DATABASE_URL, "CRM_PROVIDER": "bitrix24",
+               "BITRIX_WEBHOOK_URL": "https://example.invalid/rest/1/exampletoken/",
+               "BITRIX_CONTACT_FIELD": "UF_CRM_CONTACT_KEY", "BITRIX_DEAL_FIELD": "UF_CRM_DEAL_KEY",
+               "BITRIX_INSTALLATION_ID": "example_installation", "TELEGRAM_ENABLED": "false",
+               "CRM_ADOPT_EXISTING": "false"}
+        env.pop("BITRIX_UNPROCESSED_STAGE", None)
+        blocked = subprocess.run([sys.executable, "-m", "app.integrations.worker"],
+                                 env={**env, "TELEGRAM_ENABLED": "true", "TELEGRAM_BOT_TOKEN": "fixture",
+                                      "TELEGRAM_CHAT_ID": "123"}, capture_output=True, text=True, timeout=10)
+        self.assertNotEqual(blocked.returncode, 0)
+        self.assertIn("BITRIX_UNPROCESSED_STAGE", blocked.stderr)
+        self.assertNotIn("exampletoken", blocked.stderr)
+        with self.psycopg.connect(DATABASE_URL) as conn:
+            self.assertEqual(conn.execute("SELECT count(*) FROM crm_entities").fetchone()[0], 0)
+        process = subprocess.Popen([sys.executable, "-m", "app.integrations.worker"], env=env,
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                with self.psycopg.connect(DATABASE_URL) as conn:
+                    bound = conn.execute("SELECT remote_id FROM crm_entities WHERE entity_type='__provider_binding__'").fetchone()
+                if bound:
+                    break
+                if process.poll() is not None:
+                    self.fail("Bitrix worker stopped before binding")
+                time.sleep(0.1)
+            else:
+                self.fail("Bitrix worker did not bind")
+            self.assertTrue(bound[0].startswith("bitrix24:"))
+            self.assertNotIn("exampletoken", bound[0])
+        finally:
+            process.terminate()
+            process.wait(timeout=10)
 
     def test_queue_diagnostics_detects_due_failures_without_mutation(self):
         from app.diagnostics import queue_report

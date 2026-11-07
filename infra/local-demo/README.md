@@ -22,7 +22,7 @@ python3 infra/local-demo/prepare_tls.py
 
    ```sh
    docker compose --env-file infra/local-demo/.local/demo.env -f infra/local-demo/crm-compose.yaml up -d
-   docker compose -p remont-trial --env-file .env up -d --build
+   docker compose -p remont-trial --env-file .env up -d --build db migrate receiver
    ```
 
 2. Настройте локальную EspoCRM по [инструкции интеграции](../../docs/integrations.md): API-пользователя с ограниченной ролью, поля `cAutomationKey`, рубли и стадию сделки. Внесите ключ API и ID пользователя в `infra/local-demo/.local/demo.env`. CRM доступна только на `http://127.0.0.1:18090`.
@@ -37,7 +37,7 @@ python3 infra/local-demo/prepare_tls.py
 
    Инициализация импортирует credential и workflow через стандартный ввод, публикует workflow и отказывается работать, если том n8n уже существует. Секреты не записываются во временные файлы и журналы. Если инициализация прервалась, новый том сохраняется для проверки; скрипт не удаляет и не перезаписывает его. `--project-name` задаёт другое имя изолированного проекта, если это необходимо.
 
-4. Переключите обработчик на локальную EspoCRM:
+4. Запустите обработчик сразу с локальной EspoCRM (не запускайте перед этим demo-обработчик на той же базе: первая CRM привязывается к базе):
 
    ```sh
    docker compose -p remont-trial --env-file .env --env-file infra/local-demo/.local/demo.env -f compose.yaml -f infra/local-demo/integrations-override.yaml up -d --no-deps integrations

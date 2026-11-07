@@ -4,6 +4,40 @@ from psycopg.types.json import Jsonb
 
 from app.integrations.providers import CRMResult
 
+
+def ensure_provider_binding(dsn, provider, identity, adopt_legacy=False, adopt_mixed=False):
+    """Pin one database to a CRM account before a worker can deliver anything."""
+    if provider not in ("demo", "espocrm", "bitrix24") or not isinstance(identity, str) or not identity:
+        raise ValueError("Invalid CRM binding")
+    binding = provider + ":" + identity
+    with psycopg.connect(dsn, connect_timeout=3) as conn:
+        conn.execute("SET LOCAL statement_timeout = '5s'")
+        conn.execute("SET LOCAL lock_timeout = '3s'")
+        conn.execute("SELECT pg_advisory_xact_lock(hashtext('remont-crm-binding-v1'))")
+        row = conn.execute("SELECT remote_id FROM crm_entities WHERE entity_type = '__provider_binding__' "
+                           "AND external_key = 'singleton' FOR UPDATE").fetchone()
+        if row:
+            if row[0] != binding:
+                raise ValueError("CRM provider binding differs; use a separate database and reviewed migration")
+            return
+        journal, tracking, demo, jobs, foreign_journal = conn.execute("""SELECT
+            EXISTS (SELECT 1 FROM crm_entities WHERE entity_type <> '__provider_binding__'),
+            EXISTS (SELECT 1 FROM crm_tracking), EXISTS (SELECT 1 FROM demo_crm),
+            EXISTS (SELECT 1 FROM integration_jobs WHERE destination = 'crm' AND (status <> 'pending' OR attempts > 0)),
+            EXISTS (SELECT 1 FROM crm_entities WHERE entity_type NOT IN ('__provider_binding__', 'Contact', 'Opportunity'))
+        """).fetchone()
+        has_history = journal or tracking or demo or jobs
+        if has_history and (provider == "bitrix24" or not adopt_legacy):
+            raise ValueError("Existing CRM history is unbound; review it before adopting or use a new database")
+        if foreign_journal:
+            raise ValueError("Unrecognized CRM journal history requires a reviewed migration")
+        mixed = (provider == "espocrm" and demo) or (provider == "demo" and (journal or tracking))
+        if mixed and not adopt_mixed:
+            raise ValueError("Mixed CRM history requires separate explicit acknowledgement")
+        conn.execute("""INSERT INTO crm_entities(entity_type, external_key, create_started, remote_id)
+            VALUES ('__provider_binding__', 'singleton', true, %s)""", (binding,))
+
+
 class Journal:
     def __init__(self, dsn):
         self.dsn = dsn
