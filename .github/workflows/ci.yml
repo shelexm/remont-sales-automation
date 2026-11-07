@@ -29,10 +29,15 @@ jobs:
         with:
           python-version: '3.12'
       - run: python -m pip install ruff==0.11.13 pip-audit==2.9.0 .
-      - run: ruff check tests app migrations
+      - run: ruff check tests app migrations infra/local-demo
       - run: python -m unittest discover -s tests -v
-      - run: python -m compileall -q tests app migrations
+      - run: python -m compileall -q tests app migrations infra/local-demo
       - run: python -m json.tool workflows/process-leads.json > /dev/null
+      - name: Validate local demo Compose configuration
+        run: |
+          docker compose --env-file infra/local-demo/env.example -f infra/local-demo/crm-compose.yaml config --quiet
+          docker compose --env-file infra/local-demo/env.example -f infra/local-demo/compose.yaml config --quiet
+          docker compose -p remont-trial --env-file .env.example --env-file infra/local-demo/env.example -f compose.yaml -f infra/local-demo/integrations-override.yaml config --quiet
       - name: Exercise n8n against disposable PostgreSQL
         run: python tests/n8n_smoke.py
       - name: Audit Python tooling dependencies
