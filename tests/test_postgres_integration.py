@@ -31,6 +31,38 @@ class PostgreSQLTests(unittest.TestCase):
         with self.assertRaises(Exception):
             database_ready("postgresql://bad:bad@127.0.0.1:1/missing")
 
+    def test_queue_diagnostics_detects_due_failures_without_mutation(self):
+        from app.diagnostics import queue_report
+        self.assertEqual(queue_report(DATABASE_URL)["status"], "ok")
+        with self.psycopg.connect(DATABASE_URL) as conn:
+            conn.execute("INSERT INTO lead_events (source_id, payload_hash, payload, available_at) "
+                         "VALUES ('diagnostic', %s, '{}', now() - interval '6 minutes')", ("a" * 64,))
+            conn.execute("INSERT INTO lead_events (source_id, payload_hash, payload, available_at) "
+                         "VALUES ('future-retry', %s, '{}', now() + interval '1 hour')", ("b" * 64,))
+        report = queue_report(DATABASE_URL)
+        self.assertEqual(report["status"], "attention")
+        self.assertEqual(report["events"]["pending"], 2)
+        self.assertEqual(report["events"]["overdue"], 1)
+        with self.psycopg.connect(DATABASE_URL) as conn:
+            self.assertEqual(conn.execute("SELECT count(*) FROM lead_events WHERE status = 'pending'").fetchone()[0], 2)
+        with self.assertRaises(ValueError):
+            queue_report(DATABASE_URL, 0)
+
+    def test_queue_diagnostics_detects_uncertain_delivery(self):
+        from app.diagnostics import queue_report
+        from app.db.leads import save_lead
+        from test_lead_ingest import LEAD, validate
+        save_lead(DATABASE_URL, validate(LEAD, 1000000))
+        with self.psycopg.connect(DATABASE_URL) as conn:
+            token = uuid.uuid4()
+            event = conn.execute("SELECT id FROM claim_lead(%s)", (token,)).fetchone()
+            conn.execute("SELECT * FROM process_lead(%s, %s)", (event[0], token))
+            conn.execute("UPDATE integration_jobs SET status = 'uncertain' WHERE destination = 'telegram'")
+        report = queue_report(DATABASE_URL)
+        self.assertEqual(report["status"], "attention")
+        self.assertEqual(report["integrations"]["telegram"]["uncertain"], 1)
+        self.assertNotIn("phone", str(report))
+
     def test_duplicate_and_changed_payload(self):
         from test_lead_ingest import LEAD, validate
         from app.db.leads import save_lead
