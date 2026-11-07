@@ -63,6 +63,39 @@ class PostgreSQLTests(unittest.TestCase):
         self.assertEqual(report["integrations"]["telegram"]["uncertain"], 1)
         self.assertNotIn("phone", str(report))
 
+    def test_analytics_counts_cohort_repeat_cases_and_current_jobs_without_pii(self):
+        from app.analytics import report
+        from app.db.leads import save_lead
+        from test_lead_ingest import LEAD, validate
+        lead = validate(LEAD, 1000000)
+        save_lead(DATABASE_URL, lead)
+        save_lead(DATABASE_URL, {**lead, "source_id": "repeat"})
+        low = validate({**LEAD, "tranid": "low", "Phone": "+79990000111", "Budget": "500", "Service": "cosmetic"}, 1000000)
+        save_lead(DATABASE_URL, low)
+        with self.psycopg.connect(DATABASE_URL) as conn:
+            for _ in range(2):
+                token = uuid.uuid4()
+                event = conn.execute("SELECT id FROM claim_lead(%s)", (token,)).fetchone()
+                conn.execute("SELECT * FROM process_lead(%s, %s)", (event[0], token))
+            conn.execute("UPDATE integration_jobs SET status='done' WHERE destination='crm'")
+            conn.execute("DELETE FROM integration_jobs WHERE destination='crm' AND event_id=2")
+            conn.execute("INSERT INTO lead_events(source_id, payload_hash, payload) VALUES "
+                         "('unknown', %s, %s::jsonb)", ("d" * 64, '{"service":"private-string","budget_class":"private-string"}'))
+            conn.execute("INSERT INTO lead_events(source_id, payload_hash, payload, created_at) "
+                         "VALUES ('old', %s, '{}'::jsonb, now() - interval '40 days')", ("e" * 64,))
+        stats = report(DATABASE_URL, 30)
+        self.assertEqual(stats["events"], {"accepted": 4, "completed": 2, "pending": 2, "processing": 0,
+                                         "failed": 0, "first_case_events": 1, "repeat_case_events": 1,
+                                         "without_case": 2})
+        self.assertEqual(stats["services"], {"capital": 2, "cosmetic": 1, "unknown": 1})
+        self.assertEqual(stats["budget_classes"], {"high": 2, "low": 1, "unknown": 1})
+        self.assertEqual(stats["integration_jobs"]["crm"], {"done": 1})
+        self.assertEqual(stats["completed_without_crm_job"], 1)
+        self.assertNotIn("private-string", str(stats))
+        self.assertNotIn("7999", str(stats))
+        with self.assertRaises(ValueError):
+            report(DATABASE_URL, 0)
+
     def test_reconciliation_is_atomic_audited_and_single_use(self):
         from app.reconcile import confirm_telegram, list_uncertain
         from app.db.leads import save_lead
