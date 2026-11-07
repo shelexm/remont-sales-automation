@@ -59,5 +59,22 @@ services:
       migrate:
         condition: service_completed_successfully
     restart: unless-stopped
+  monitor:
+    profiles: ["monitor"]
+    build: .
+    command: ["python", "-u", "-m", "app.monitor"]
+    environment:
+      DATABASE_URL: postgresql://remont:${POSTGRES_PASSWORD}@db:5432/remont
+      MONITOR_PUBLIC_HEALTH_URL: ${MONITOR_PUBLIC_HEALTH_URL:-}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-m", "app.monitor", "--check"]
+      interval: 30s
+      timeout: 5s
+      retries: 2
+      start_period: 30s
+    restart: unless-stopped
 volumes:
   remont-db:
