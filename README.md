@@ -25,7 +25,7 @@ docker compose ps
 
 CI выполняет линтер, unit- и PostgreSQL-тесты, проверку миграций и smoke-тест workflow n8n в отдельном контейнере. Для локальной проверки тестовая PostgreSQL должна быть отдельной и disposable: тесты очищают её таблицы. Передавайте её адрес через `TEST_DATABASE_URL`; без него PostgreSQL-тесты пропускаются.
 
-Подробности: [приёмник](docs/lead-intake.md), [CRM и Telegram](docs/integrations.md), [диагностика и локальный мониторинг](docs/queue-diagnostics.md), [локальный стенд](infra/local-demo/README.md), [резервные копии](infra/backup/README.md), [Tilda](docs/tilda/assembly.md), [архитектура](docs/architecture.md), [миграции](docs/migrations.md).
+Подробности: [приёмник](docs/lead-intake.md), [CRM и Telegram](docs/integrations.md), [отчёт по заявкам](docs/analytics.md), [диагностика и локальный мониторинг](docs/queue-diagnostics.md), [локальный стенд](infra/local-demo/README.md), [резервные копии](infra/backup/README.md), [Tilda](docs/tilda/assembly.md), [архитектура](docs/architecture.md), [миграции](docs/migrations.md).
 
 ## Текущие ограничения
 
