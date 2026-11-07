@@ -47,4 +47,24 @@ python3 infra/local-demo/prepare_tls.py
 
 5. Проверьте `docker compose ... ps`, отправьте вымышленную заявку в приёмник и убедитесь в завершении задания CRM и появлении контакта и сделки. `GET /health` проверяет только процесс приёмника. Инструкции по форме, Telegram и диагностике — в [приёме заявок](../../docs/lead-intake.md) и [интеграциях](../../docs/integrations.md).
 
+## Подключение Telegram для теста
+
+Создайте отдельного бота в BotFather. Сохраните его токен в файл `infra/local-demo/.local/telegram-token` с правами `600`, не размещая токен в Git, командной строке или переписке. Например, из корня репозитория можно безопасно ввести его без отображения на экране:
+
+```sh
+python3 -c 'import getpass, os; p="infra/local-demo/.local/telegram-token"; fd=os.open(p,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600); os.write(fd,(getpass.getpass("Токен бота: ")+"\n").encode()); os.close(fd)'
+```
+
+Скрипт не перезапишет существующий файл. Затем выполните `python3 infra/local-demo/telegram_setup.py challenge` и отправьте выданный одноразовый код в личном чате указанного бота после нажатия «Запустить». На некоторых установках Python для macOS необходимо задать системные корневые сертификаты: `SSL_CERT_FILE=/etc/ssl/cert.pem python3 infra/local-demo/telegram_setup.py challenge`. Код используется только для привязки чата и не заменяет токен.
+
+После отправки кода выполните `python3 infra/local-demo/telegram_setup.py bind` (при необходимости с тем же `SSL_CERT_FILE`). Скрипт выберет ровно один личный чат с совпадающим кодом, сохранит токен и ID чата в `.local/telegram.env` с правами `600` и удалит одноразовый код. При неоднозначности или существующем файле настройки он остановится, ничего не перезаписывая. До включения просмотрите очередь: старые ожидающие задания могут породить уведомления и напоминания.
+
+Включите Telegram, добавив третий env-файл и override:
+
+```sh
+docker compose -p remont-trial --env-file .env --env-file infra/local-demo/.local/demo.env --env-file infra/local-demo/.local/telegram.env -f compose.yaml -f infra/local-demo/integrations-override.yaml -f infra/local-demo/telegram-override.yaml up -d --no-deps integrations
+```
+
+Далее при перезапуске обработчика используйте все три env-файла и оба override. При смене или компрометации токена перевыпустите его в BotFather, обновите защищённые локальные файлы и пересоздайте обработчик; старый токен больше не используйте. Не повторяйте автоматически задания `uncertain`: их доставка могла состояться, поэтому сначала сверьте чат.
+
 Для постоянного использования нужны стабильный защищённый адрес, документы оператора, отдельные права, мониторинг, резервные копии и проверка их восстановления. Временные Quick Tunnel не дают стабильного адреса и могут перестать работать после перезапуска.
