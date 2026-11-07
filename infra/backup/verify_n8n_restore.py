@@ -8,24 +8,18 @@ import uuid
 
 from backup_n8n import inspect_snapshot
 from backup_postgres import container_name
+from n8n_keys import read_container_key, read_key_file, validate_key
 
 IMAGE = "docker.n8n.io/n8nio/n8n:2.46.6"
 
 
-def verify(snapshot, source_container):
+def verify(snapshot, source_container=None, key_file=None):
     workflows, credentials = inspect_snapshot(snapshot)
     if credentials == 0:
         raise ValueError("Snapshot has no credentials; key decryption cannot be checked.")
-    # Read the key already configured in the source container, but never print it or put it in command arguments.
-    key_result = subprocess.run(["docker", "exec", source_container, "sh", "-c",
-                                 'test -n "$N8N_ENCRYPTION_KEY" && printf %s "$N8N_ENCRYPTION_KEY"'],
-                                capture_output=True, timeout=10)
-    if key_result.returncode or not key_result.stdout or b"\0" in key_result.stdout or len(key_result.stdout) > 4096:
-        raise RuntimeError("Could not read the encryption key from the specified n8n container.")
-    try:
-        key = key_result.stdout.decode("utf-8")
-    except UnicodeDecodeError:
-        raise RuntimeError("The n8n encryption key is not valid UTF-8.") from None
+    if (source_container is None) == (key_file is None):
+        raise ValueError("Specify exactly one key source.")
+    key = validate_key(read_container_key(source_container) if source_container else read_key_file(key_file))
     name = "remont-n8n-restore-" + uuid.uuid4().hex
     volume_created = False
     try:
@@ -76,10 +70,12 @@ def verify(snapshot, source_container):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("snapshot", type=Path)
-    parser.add_argument("--source-container", type=container_name, required=True)
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--source-container", type=container_name)
+    group.add_argument("--key-file", type=Path)
     args = parser.parse_args()
     try:
-        verify(args.snapshot, args.source_container)
+        verify(args.snapshot, args.source_container, args.key_file)
     except subprocess.TimeoutExpired:
         raise SystemExit("n8n restore check timed out; inspect Docker for disposable resources.") from None
     except sqlite3.Error:
