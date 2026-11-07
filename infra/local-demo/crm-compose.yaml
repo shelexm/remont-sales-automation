@@ -1,0 +1,58 @@
+name: remont-local-crm
+services:
+  db:
+    image: mariadb:11.4
+    environment:
+      MARIADB_DATABASE: espocrm
+      MARIADB_USER: espocrm
+      MARIADB_PASSWORD: ${CRM_DB_PASSWORD:?}
+      MARIADB_ROOT_PASSWORD: ${CRM_ROOT_PASSWORD:?}
+    volumes:
+      - db:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+  crm:
+    image: espocrm:10.0.11
+    environment:
+      ESPOCRM_DATABASE_HOST: db
+      ESPOCRM_DATABASE_USER: espocrm
+      ESPOCRM_DATABASE_PASSWORD: ${CRM_DB_PASSWORD:?}
+      ESPOCRM_ADMIN_USERNAME: admin
+      ESPOCRM_ADMIN_PASSWORD: ${CRM_ADMIN_PASSWORD:?}
+      ESPOCRM_SITE_URL: http://localhost:18090
+    ports:
+      - "127.0.0.1:18090:80"
+    volumes:
+      - data:/var/www/html/data
+      - custom:/var/www/html/custom
+      - custom-client:/var/www/html/client/custom
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "bin/command", "app-check"]
+      start_period: 60s
+      interval: 20s
+      timeout: 10s
+      retries: 8
+    restart: unless-stopped
+  daemon:
+    image: espocrm:10.0.11
+    entrypoint: docker-daemon.sh
+    volumes:
+      - data:/var/www/html/data
+      - custom:/var/www/html/custom
+      - custom-client:/var/www/html/client/custom
+    depends_on:
+      crm:
+        condition: service_healthy
+    restart: unless-stopped
+volumes:
+  db:
+  data:
+  custom:
+  custom-client:
