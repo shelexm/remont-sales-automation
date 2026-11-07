@@ -4,7 +4,7 @@ import unittest
 from urllib.parse import urlencode
 from http.server import ThreadingHTTPServer
 
-from app.api.webhook import make_handler
+from app.api.webhook import is_loopback_address, make_handler
 from app.core.leads import InvalidLead, fingerprint, validate
 
 TOKEN = "a" * 32
@@ -98,6 +98,36 @@ class WebhookTests(unittest.TestCase):
         self.assertEqual(self.request(LEAD, "wrong"), 401)
         self.assertEqual(self.request({**LEAD, "Phone": "wrong"}), 422)
         self.assertEqual(len(self.saved), before)
+
+    def test_readiness_is_local_only_and_does_not_reveal_database_errors(self):
+        self.assertTrue(is_loopback_address("127.0.0.1"))
+        self.assertTrue(is_loopback_address("::1"))
+        self.assertFalse(is_loopback_address("172.18.0.10"))
+        self.assertFalse(is_loopback_address("invalid"))
+
+        def probe(dsn):
+            if dsn == "down":
+                raise RuntimeError("database credentials must never be exposed")
+            return True
+
+        for dsn, expected, body in (("ok", 200, b'"ready"'), ("down", 503, b'"not_ready"')):
+            with self.subTest(dsn=dsn):
+                server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(dsn, TOKEN, 1000000, ready=probe))
+                thread = threading.Thread(target=server.serve_forever, daemon=True)
+                thread.start()
+                try:
+                    conn = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=3)
+                    conn.request("GET", "/ready")
+                    response = conn.getresponse()
+                    self.assertEqual(response.status, expected)
+                    content = response.read()
+                    self.assertIn(body, content)
+                    self.assertNotIn(b"credentials", content)
+                    conn.close()
+                finally:
+                    server.shutdown()
+                    thread.join()
+                    server.server_close()
 
 
 if __name__ == "__main__":

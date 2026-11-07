@@ -31,6 +31,12 @@ services:
       HIGH_BUDGET_THRESHOLD: ${HIGH_BUDGET_THRESHOLD:-1000000}
     ports:
       - "127.0.0.1:18080:8080"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/ready', timeout=5)"]
+      interval: 15s
+      timeout: 6s
+      retries: 3
+      start_period: 20s
     depends_on:
       migrate:
         condition: service_completed_successfully

@@ -25,6 +25,12 @@ class PostgreSQLTests(unittest.TestCase):
         with self.psycopg.connect(DATABASE_URL) as conn:
             conn.execute("TRUNCATE integration_jobs, demo_crm, crm_entities, crm_tracking, lead_events, lead_cases RESTART IDENTITY CASCADE")
 
+    def test_readiness_checks_database_and_inbox_table(self):
+        from app.db.leads import database_ready
+        self.assertTrue(database_ready(DATABASE_URL))
+        with self.assertRaises(Exception):
+            database_ready("postgresql://bad:bad@127.0.0.1:1/missing")
+
     def test_duplicate_and_changed_payload(self):
         from test_lead_ingest import LEAD, validate
         from app.db.leads import save_lead
