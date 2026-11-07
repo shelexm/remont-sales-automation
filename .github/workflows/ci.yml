@@ -48,6 +48,8 @@ jobs:
         run: python tests/backup_mariadb_smoke.py
       - name: Verify online n8n SQLite snapshot
         run: python tests/backup_n8n_smoke.py
+      - name: Verify isolated n8n restore and key
+        run: python tests/n8n_restore_smoke.py
       - name: Verify isolated EspoCRM file archive
         run: python tests/backup_espo_files_smoke.py
       - name: Verify receiver readiness and recovery
