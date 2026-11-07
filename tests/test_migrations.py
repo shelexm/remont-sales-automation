@@ -45,8 +45,9 @@ class MigrationTests(unittest.TestCase):
         self.migrate("head")
         with self.connection() as conn:
             self.assertEqual(conn.execute("SELECT count(*) FROM lead_events").fetchone()[0], 1)
-            self.assertEqual(conn.execute("SELECT version_num FROM alembic_version").fetchone()[0], "20261105_0002")
+            self.assertEqual(conn.execute("SELECT version_num FROM alembic_version").fetchone()[0], "20261107_0003")
             self.assertIsNotNone(conn.execute("SELECT to_regclass('integration_jobs')").fetchone()[0])
+            self.assertIsNotNone(conn.execute("SELECT to_regclass('integration_resolutions')").fetchone()[0])
 
     def test_legacy_database_fails_closed_without_losing_data(self):
         with self.connection() as conn:
@@ -60,6 +61,20 @@ class MigrationTests(unittest.TestCase):
         with self.connection() as conn:
             self.assertEqual(conn.execute("SELECT count(*) FROM lead_events").fetchone()[0], 1)
             self.assertIsNotNone(conn.execute("SELECT to_regclass('integration_jobs')").fetchone()[0])
+
+    def test_reconciliation_migration_preserves_uncertain_jobs(self):
+        self.migrate("20261105_0002")
+        with self.connection() as conn:
+            event = conn.execute("INSERT INTO lead_events(source_id, payload_hash, payload) "
+                                 "VALUES ('fixture', %s, '{}') RETURNING id", ("c" * 64,)).fetchone()[0]
+            case = conn.execute("INSERT INTO lead_cases(phone, service, first_event_id, last_event_id) "
+                                "VALUES ('test', 'test', %s, %s) RETURNING id", (event, event)).fetchone()[0]
+            conn.execute("INSERT INTO integration_jobs(event_id, case_id, destination, status) "
+                         "VALUES (%s, %s, 'telegram', 'uncertain')", (event, case))
+        self.migrate("head")
+        with self.connection() as conn:
+            self.assertEqual(conn.execute("SELECT status FROM integration_jobs").fetchone()[0], "uncertain")
+            self.assertEqual(conn.execute("SELECT count(*) FROM integration_resolutions").fetchone()[0], 0)
 
     def test_mapped_tables_match_migrated_columns_and_foreign_keys(self):
         self.migrate("head")
