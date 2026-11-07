@@ -11,11 +11,13 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 import psycopg
 
+from app.alerts import StableAlerts, telegram_send
 from app.diagnostics import queue_report
 
 STATUS_FILE = Path("/tmp/remont-monitor-status.json")
 INTERVAL = 60
 MAX_AGE = 150
+ALERT_STATE = Path("/var/lib/remont-monitor/alerts.json")
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -76,9 +78,28 @@ def main():
         return 2
     dsn = os.environ.get("DATABASE_URL", "")
     public_url = os.environ.get("MONITOR_PUBLIC_HEALTH_URL", "")
+    alerts_enabled = os.environ.get("MONITOR_TELEGRAM_ENABLED", "false").lower() == "true"
+    token, chat = os.environ.get("MONITOR_TELEGRAM_BOT_TOKEN", ""), os.environ.get("MONITOR_TELEGRAM_CHAT_ID", "")
+    alerts = None
+    if alerts_enabled and token and chat:
+        try:
+            alerts = StableAlerts(ALERT_STATE, lambda text: telegram_send(token, chat, text))
+        except (OSError, ValueError):
+            pass
     previous = None
     while True:
         current = snapshot(dsn, public_url)
+        if alerts_enabled:
+            try:
+                if alerts is None:
+                    raise ValueError("Alert configuration or state unavailable")
+                outcome = alerts.observe(current)
+                current["alert_delivery"] = ("unconfirmed" if outcome == "unconfirmed"
+                                             or "attempted" in alerts.active.values() else "ok")
+            except (OSError, ValueError):
+                current["alert_delivery"] = "unavailable"
+            if current["alert_delivery"] != "ok":
+                current["status"] = "attention"
         write_status(STATUS_FILE, current, time.time())
         if current != previous:
             print(json.dumps(current, ensure_ascii=False, sort_keys=True), flush=True)
