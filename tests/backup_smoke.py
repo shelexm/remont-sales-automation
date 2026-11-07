@@ -18,7 +18,7 @@ try:
     started = True
     deadline = time.monotonic() + 45
     while time.monotonic() < deadline:
-        ready = subprocess.run(["docker", "exec", name, "pg_isready", "-U", "test", "-d", "test"],
+        ready = subprocess.run(["docker", "exec", name, "pg_isready", "-h", "127.0.0.1", "-U", "test", "-d", "test"],
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if ready.returncode == 0:
             break

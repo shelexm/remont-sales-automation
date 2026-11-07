@@ -31,7 +31,9 @@ def verify(archive):
         started = True
         deadline = time.monotonic() + 45
         while time.monotonic() < deadline:
-            ready = subprocess.run(["docker", "exec", name, "pg_isready", "-U", "verify", "-d", "restorecheck"],
+            # The image starts a temporary socket-only server during initialization and then restarts it.
+            # Wait for TCP on loopback so pg_restore cannot race the temporary server shutdown.
+            ready = subprocess.run(["docker", "exec", name, "pg_isready", "-h", "127.0.0.1", "-U", "verify", "-d", "restorecheck"],
                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
             if ready.returncode == 0:
                 break
