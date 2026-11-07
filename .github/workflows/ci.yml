@@ -44,6 +44,8 @@ jobs:
         run: python tests/n8n_smoke.py
       - name: Verify isolated PostgreSQL backup and restore
         run: python tests/backup_smoke.py
+      - name: Verify isolated MariaDB backup and restore
+        run: python tests/backup_mariadb_smoke.py
       - name: Verify receiver readiness and recovery
         run: python tests/readiness_smoke.py
       - name: Audit Python tooling dependencies
