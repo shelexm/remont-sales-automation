@@ -16,6 +16,7 @@ import uuid
 from backup_n8n import inspect_snapshot
 from backup_postgres import container_name
 from n8n_keys import read_key_file, validate_key
+from recovery_config import read_config, secret_env, validate_config
 from verify_espo_restore import validate_inputs
 
 N8N_IMAGE = "docker.n8n.io/n8nio/n8n:2.46.6"
@@ -37,23 +38,6 @@ def captured(args, *, timeout=30, **kwargs):
     if result.returncode:
         raise RuntimeError("Isolated recovery operation failed.")
     return result.stdout
-
-
-def secret_env(container, names):
-    values = {}
-    for name in names:
-        if not re.fullmatch(r"[A-Z_]+", name):
-            raise ValueError("Invalid configuration name.")
-        raw = captured(["docker", "exec", container, "sh", "-c", 'printenv "$1"', "sh", name], timeout=10)
-        if not raw.endswith(b"\n") or len(raw) > 4097:
-            raise RuntimeError("Required source configuration is unavailable.")
-        try:
-            values[name] = raw[:-1].decode("utf-8")
-        except UnicodeDecodeError:
-            raise RuntimeError("Required source configuration is unavailable.") from None
-        if not values[name] or "\0" in values[name]:
-            raise RuntimeError("Required source configuration is unavailable.")
-    return values
 
 
 def private_file(path):
@@ -98,16 +82,23 @@ def put(container, target, content):
         raise RuntimeError("Could not populate a temporary container.")
 
 
-def drill(postgres, crm_db, crm_files, n8n_db, n8n_key, source_db, source_integrations):
+def drill(postgres, crm_db, crm_files, n8n_db, n8n_key, source_db=None, source_integrations=None, config_file=None):
     postgres = private_file(postgres)
     crm_db, crm_files = validate_inputs(crm_db, crm_files)
     n8n_db = private_file(n8n_db)
     validate_n8n_snapshot(n8n_db)
     key = validate_key(read_key_file(n8n_key))
-    pg_password = secret_env(source_db, ["POSTGRES_PASSWORD"])["POSTGRES_PASSWORD"]
-    crm_config = secret_env(source_integrations, ["ESPO_URL", "ESPO_API_KEY", "ESPO_ASSIGNED_USER_ID"])
-    if crm_config["ESPO_URL"].rstrip("/") != "https://crm.remont.internal:8443":
-        raise ValueError("Source CRM URL is not the expected local demo endpoint.")
+    if config_file is not None:
+        if source_db is not None or source_integrations is not None:
+            raise ValueError("Use either a recovery configuration file or both source containers.")
+        config = read_config(config_file)
+    else:
+        if not source_db or not source_integrations:
+            raise ValueError("Use either a recovery configuration file or both source containers.")
+        config = validate_config({"version": 1, **secret_env(source_db, ["POSTGRES_PASSWORD"]),
+                                  **secret_env(source_integrations, ["ESPO_URL", "ESPO_API_KEY", "ESPO_ASSIGNED_USER_ID"])})
+    pg_password = config["POSTGRES_PASSWORD"]
+    crm_config = {name: config[name] for name in ("ESPO_URL", "ESPO_API_KEY", "ESPO_ASSIGNED_USER_ID")}
     for image in (N8N_IMAGE, PG_IMAGE, DB_IMAGE, CRM_IMAGE, NGINX_IMAGE, RECEIVER_IMAGE, WORKER_IMAGE):
         if not run(["docker", "image", "inspect", image], timeout=15):
             raise RuntimeError("A required local Docker image is missing; no images were pulled.")
@@ -293,11 +284,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("postgres", "crm-db", "crm-files", "n8n-db", "n8n-key"):
         parser.add_argument("--" + name, required=True, type=Path)
-    parser.add_argument("--source-db", required=True, type=container_name)
-    parser.add_argument("--source-integrations", required=True, type=container_name)
+    parser.add_argument("--source-db", type=container_name)
+    parser.add_argument("--source-integrations", type=container_name)
+    parser.add_argument("--config-file", type=Path)
     args = parser.parse_args()
     try:
-        drill(args.postgres, args.crm_db, args.crm_files, args.n8n_db, args.n8n_key, args.source_db, args.source_integrations)
+        drill(args.postgres, args.crm_db, args.crm_files, args.n8n_db, args.n8n_key, args.source_db,
+              args.source_integrations, args.config_file)
     except subprocess.TimeoutExpired:
         raise SystemExit("Recovery drill timed out; inspect Docker for temporary remont-drill containers.") from None
     except sqlite3.Error:

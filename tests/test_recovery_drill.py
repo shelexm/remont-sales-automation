@@ -37,7 +37,7 @@ class RecoveryDrillTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "expected active demo workflow"):
             module.validate_n8n_snapshot(db)
 
-    def run_simulated(self, pending="0"):
+    def run_simulated(self, pending="0", use_config=False):
         calls = []
         values = {"POSTGRES_PASSWORD": "synthetic-db-secret", "ESPO_URL": "https://crm.remont.internal:8443",
                   "ESPO_API_KEY": "synthetic-crm-secret", "ESPO_ASSIGNED_USER_ID": "demo123"}
@@ -56,17 +56,22 @@ class RecoveryDrillTests(unittest.TestCase):
                 raise RuntimeError(message)
 
         def fake_secrets(container, names):
+            if use_config:
+                raise AssertionError("Backup-based drill must not inspect live containers")
             return {name: values[name] for name in names}
 
         result = subprocess.CompletedProcess([], 0, stdout=b"", stderr=b"")
         with patch.object(module, "private_file", side_effect=lambda path: Path(path)), \
              patch.object(module, "validate_inputs", side_effect=lambda db, files: (Path(db), Path(files))), \
              patch.object(module, "validate_n8n_snapshot"), patch.object(module, "read_key_file", return_value=b"synthetic-n8n-secret"), \
-             patch.object(module, "secret_env", side_effect=fake_secrets), patch.object(module, "run", side_effect=fake_run), \
+             patch.object(module, "secret_env", side_effect=fake_secrets), \
+             patch.object(module, "read_config", return_value={"version": 1, **values}), \
+             patch.object(module, "run", side_effect=fake_run), \
              patch.object(module, "postgres_query", side_effect=[pending, "completed|done|abc123"]), \
              patch.object(module, "wait_until", side_effect=fake_wait), \
              patch.object(module.subprocess, "run", return_value=result), patch("builtins.print"):
-            module.drill(self.path, self.path, self.path, self.path, self.path, "source-db", "source-worker")
+            sources = (None, None, self.path) if use_config else ("source-db", "source-worker", None)
+            module.drill(self.path, self.path, self.path, self.path, self.path, *sources)
         return calls
 
     def test_drill_has_no_external_network_ports_or_live_mounts(self):
@@ -88,6 +93,10 @@ class RecoveryDrillTests(unittest.TestCase):
     def test_preexisting_pending_work_aborts_before_crm_or_n8n_start(self):
         with self.assertRaisesRegex(RuntimeError, "pending"):
             self.run_simulated(pending="1")
+
+    def test_saved_config_does_not_read_live_containers(self):
+        calls = self.run_simulated(use_config=True)
+        self.assertEqual(len([args for args, _ in calls if args[:2] == ["docker", "run"]]), 7)
 
 
 if __name__ == "__main__":
