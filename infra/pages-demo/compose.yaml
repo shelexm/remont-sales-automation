@@ -1,0 +1,23 @@
+name: remont-pages-demo
+services:
+  gateway:
+    build:
+      context: ../..
+    command: ["python", "-u", "-m", "app.api.demo_gateway"]
+    environment:
+      WEBHOOK_KEY: ${WEBHOOK_KEY:?Set WEBHOOK_KEY}
+      DEMO_ALLOWED_ORIGINS: ${DEMO_ALLOWED_ORIGINS:?Set DEMO_ALLOWED_ORIGINS}
+    ports:
+      - "127.0.0.1:18767:8081"
+    networks: [automation]
+    restart: unless-stopped
+  tunnel:
+    image: cloudflare/cloudflared:2025.11.1
+    command: ["tunnel", "--no-autoupdate", "--protocol", "http2", "--url", "http://gateway:8081"]
+    networks: [automation]
+    depends_on: [gateway]
+    restart: unless-stopped
+networks:
+  automation:
+    external: true
+    name: remont-trial_default

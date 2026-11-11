@@ -42,6 +42,7 @@ jobs:
           docker compose -p remont-trial --env-file .env.example --env-file infra/local-demo/env.example -f compose.yaml -f infra/local-demo/integrations-override.yaml -f infra/local-demo/telegram-override.yaml config --quiet
           docker compose -p remont-trial --env-file .env.example --env-file infra/local-demo/env.example -f compose.yaml -f infra/local-demo/integrations-override.yaml -f infra/local-demo/telegram-override.yaml --profile monitor config --quiet
           docker compose -p remont-trial --env-file .env.example --env-file infra/local-demo/env.example -f compose.yaml -f infra/local-demo/bitrix-override.yaml config --quiet
+          DEMO_ALLOWED_ORIGINS=https://example.test docker compose --env-file .env.example -f infra/pages-demo/compose.yaml config --quiet
       - name: Exercise n8n against disposable PostgreSQL
         run: python tests/n8n_smoke.py
       - name: Verify isolated PostgreSQL backup and restore
