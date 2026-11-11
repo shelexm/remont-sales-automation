@@ -49,6 +49,10 @@ class FakeBitrix:
             return {"result": {field: {"type": "string", "isReadOnly": False, "isMultiple": False, "isImmutable": False}}}
         if api.endswith(".list"):
             name, value = next(iter(params["filter"].items()))
+            # Bitrix ignores the equality operator for PHONE and returns all contacts.
+            if name == "=PHONE":
+                rows = list(store.values())
+                return {"result": rows, "total": len(rows)}
             name = name.lstrip("=")
             if name == "PHONE":
                 rows = [x for x in store.values() if any(p["VALUE"] == value for p in x.get("PHONE", []))]
@@ -86,6 +90,13 @@ def make_adapter(fake, journal=None, installation="install123"):
 
 
 class BitrixTests(unittest.TestCase):
+    def test_phone_search_ignores_unrelated_contact(self):
+        fake = FakeBitrix()
+        fake.contacts["1"] = {"ID": "1", "PHONE": [{"VALUE": "+79990000000"}]}
+        result = make_adapter(fake).sync(7, LEAD)
+        self.assertEqual(result.contact_id, "2")
+        self.assertEqual(len(fake.contacts), 2)
+
     def test_create_update_and_reuse_contact_without_duplicate(self):
         fake = FakeBitrix()
         adapter = make_adapter(fake)

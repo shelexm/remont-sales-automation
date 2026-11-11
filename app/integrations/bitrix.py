@@ -145,7 +145,7 @@ class BitrixCRM:
         return _id(found.get("ID")) if found else None
 
     def _find_phone(self, phone):
-        found = self._find("contact", {"=PHONE": phone}, ["ID", "PHONE"])
+        found = self._find("contact", {"PHONE": phone}, ["ID", "PHONE"])
         if not found:
             return None
         phones = found.get("PHONE")
