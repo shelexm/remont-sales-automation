@@ -24,6 +24,80 @@ class Journal:
 
 
 class ProviderTests(unittest.TestCase):
+    def test_espo_connection_settings_and_status_are_validated(self):
+        for url, key in [('http://example.invalid', 'key'), ('https://user:pass@example.invalid', 'key'),
+                         ('https://example.invalid?bad=1', 'key'), ('https://example.invalid', '')]:
+            with self.subTest(url=url), self.assertRaises(ValueError):
+                EspoCRM(url, key, Journal(), 'owner123')
+        for response in ({}, {'stage': ''}, {'stage': None}, []):
+            with self.subTest(response=response):
+                provider = EspoCRM('https://example.invalid', 'key', Journal(), 'owner123',
+                                   lambda *_args: response)
+                with self.assertRaises(Permanent):
+                    provider.get_stage('valid123')
+        provider = EspoCRM('https://example.invalid', 'key', Journal(), 'owner123',
+                           lambda *_args: {'stage': 'New'})
+        self.assertEqual(provider.get_stage('valid123'), 'New')
+        with self.assertRaises(Permanent):
+            provider.get_stage('../invalid')
+
+    def test_espo_does_not_trust_invalid_or_ambiguous_search(self):
+        for payload, expected in [({'list': [{}, {}]}, Uncertain), ({'list': [{}]}, Permanent),
+                                  ({'list': 'not-a-list'}, Permanent), (None, Permanent)]:
+            with self.subTest(payload=payload):
+                adapter = EspoCRM('https://example.invalid', 'key', Journal(), 'owner123',
+                                  lambda *_args: payload)
+                with self.assertRaises(expected):
+                    adapter.sync(1, LEAD)
+
+    def test_espo_invalid_create_response_is_never_assumed_successful(self):
+        calls = []
+        def fake(method, url, payload, headers, side_effect):
+            calls.append(method)
+            return {'list': []} if method == 'GET' else {'id': ''}
+        adapter = EspoCRM('https://example.invalid', 'key', Journal(), 'owner123', fake)
+        with self.assertRaises(Uncertain):
+            adapter.sync(1, LEAD)
+        with self.assertRaises(Uncertain):
+            adapter.sync(1, LEAD)
+        self.assertEqual(calls.count('POST'), 1)
+
+    def test_telegram_reminders_and_failed_responses(self):
+        payloads = []
+        def send(_method, _url, payload, _headers, _side_effect):
+            payloads.append(payload)
+            return {'ok': True, 'result': {'message_id': 11}}
+        self.assertEqual(Telegram('fixture', '1', send).remind(4), 11)
+        self.assertIn('#4', payloads[0]['text'])
+        for response in ({'ok': False}, None, []):
+            with self.subTest(response=response):
+                sender = Telegram('fixture', '1', lambda *_args: response)
+                with self.assertRaises(Uncertain):
+                    sender.notify(4, LEAD)
+                with self.assertRaises(Uncertain):
+                    sender.remind(4)
+        with self.assertRaises(ValueError):
+            Telegram('', '1')
+
+    def test_http_failure_classification_and_safe_error_messages(self):
+        for code, side_effect, expected in [(500, False, Retryable), (500, True, Uncertain),
+                                             (403, True, Permanent), (409, False, Conflict)]:
+            err = HTTPError('https://example.invalid/secret', code, 'error', {}, io.BytesIO(b'{}'))
+            with self.subTest(code=code, side_effect=side_effect), \
+                 patch('app.integrations.providers._open', side_effect=err), self.assertRaises(expected) as caught:
+                request_json('POST', 'https://example.invalid/secret', {}, side_effect=side_effect)
+            self.assertNotIn('secret', str(caught.exception))
+        err = HTTPError('https://example.invalid', 429, 'rate', {}, io.BytesIO(b'invalid json'))
+        with patch('app.integrations.providers._open', side_effect=err), self.assertRaises(Retryable) as caught:
+            request_json('GET', 'https://example.invalid')
+        self.assertEqual(caught.exception.delay, 60)
+        for body, effect, expected in [(b'bad json', False, Retryable), (b'bad json', True, Uncertain),
+                                       (b'x' * (1024 * 1024 + 1), False, Retryable)]:
+            with self.subTest(body=body[:20], effect=effect), \
+                 patch('app.integrations.providers._open', return_value=io.BytesIO(body)), \
+                 self.assertRaises(expected):
+                request_json('GET', 'https://example.invalid', side_effect=effect)
+
     def test_espo_requires_valid_assigned_user(self):
         for owner in ("", "bad-id", None):
             with self.subTest(owner=owner), self.assertRaises(ValueError):

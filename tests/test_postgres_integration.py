@@ -32,6 +32,20 @@ class PostgreSQLTests(unittest.TestCase):
         with self.assertRaises(Exception):
             database_ready("postgresql://bad:bad@127.0.0.1:1/missing")
 
+    def test_creation_journal_allows_retries_only_after_confirmed_rejection(self):
+        from app.db.integrations import Journal
+        journal = Journal(DATABASE_URL)
+        self.assertTrue(journal.begin_create('Contact', 'test-key'))
+        self.assertFalse(journal.begin_create('Contact', 'test-key'))
+        journal.reset_create('Contact', 'test-key')
+        self.assertTrue(journal.begin_create('Contact', 'test-key'))
+        journal.found('Contact', 'test-key', 'remote123')
+        journal.reset_create('Contact', 'test-key')
+        self.assertFalse(journal.begin_create('Contact', 'test-key'))
+        with self.psycopg.connect(DATABASE_URL) as conn:
+            row = conn.execute("SELECT remote_id, create_started FROM crm_entities WHERE entity_type='Contact' AND external_key='test-key'").fetchone()
+        self.assertEqual(row, ('remote123', True))
+
     def test_provider_binding_prevents_switch_and_cross_account_reuse(self):
         from app.db.integrations import ensure_provider_binding
         ensure_provider_binding(DATABASE_URL, "bitrix24", "account-a")

@@ -4,6 +4,9 @@
 __pycache__/
 *.py[cod]
 .venv/
+.coverage
+.coverage.*
+htmlcov/
 *.sqlite*
 *.dump
 *.sql.gz
