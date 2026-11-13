@@ -90,6 +90,78 @@ def make_adapter(fake, journal=None, installation="install123"):
 
 
 class BitrixTests(unittest.TestCase):
+    def test_bitrix_rejects_invalid_urls_fields_and_installation_without_secret(self):
+        invalid = [
+            ('https://example.invalid:999999/rest/1/synthetic1234/', CONTACT_FIELD, 'install123'),
+            (WEBHOOK, 'invalid_field', 'install123'),
+            (WEBHOOK, CONTACT_FIELD, 'bad'),
+        ]
+        for url, field, installation in invalid:
+            with self.subTest(field=field, installation=installation), self.assertRaises(ValueError) as caught:
+                BitrixCRM(url, field, DEAL_FIELD, installation, Journal(), FakeBitrix())
+            self.assertNotIn('synthetic1234', str(caught.exception))
+
+    def test_bitrix_never_reuses_a_nonmatching_contact_returned_by_api(self):
+        fake = FakeBitrix()
+        def wrong_phone(method, url, params, headers, side_effect):
+            if url.endswith('crm.contact.list') and 'PHONE' in params['filter']:
+                return {'result': [{'ID': '1', 'PHONE': [{'VALUE': '+79990000000'}]}], 'total': 1}
+            return fake(method, url, params, headers, side_effect)
+        with self.assertRaises(Uncertain):
+            make_adapter(wrong_phone).sync(7, LEAD)
+        self.assertNotIn('crm.contact.add', fake.calls)
+
+    def test_bitrix_rejects_incomplete_or_ambiguous_lists(self):
+        for response in ({'result': 'invalid', 'total': 1}, {'result': [], 'total': True},
+                         {'result': [], 'total': 1}, {'result': [{'ID': '1'}], 'total': 1, 'next': 50}):
+            with self.subTest(response=response):
+                fake = FakeBitrix()
+                def broken_list(method, url, params, headers, side_effect):
+                    if url.endswith('.list'):
+                        return response
+                    return fake(method, url, params, headers, side_effect)
+                with self.assertRaises((Uncertain, Permanent)):
+                    make_adapter(broken_list).sync(7, LEAD)
+                self.assertNotIn('crm.contact.add', fake.calls)
+
+    def test_bitrix_cannot_accept_unverified_stage_or_update(self):
+        fake = FakeBitrix()
+        adapter = make_adapter(fake)
+        adapter.sync(7, LEAD)
+        for deal in ('invalid', True, 0):
+            with self.subTest(deal=deal), self.assertRaises(Permanent):
+                adapter.get_stage(deal)
+        with self.assertRaises(Permanent):
+            adapter.get_stage('1')  # no stage in response
+        def bad_update(method, url, params, headers, side_effect):
+            if url.endswith('crm.deal.update'):
+                return {'result': False}
+            return fake(method, url, params, headers, side_effect)
+        adapter.transport = bad_update
+        with self.assertRaises(Uncertain):
+            adapter.sync(7, LEAD)
+        self.assertEqual(len(fake.deals), 1)
+
+    def test_bitrix_transport_classifies_unavailable_and_invalid_responses(self):
+        for body, side_effect, error in [(b'[]', False, Permanent), (b'[]', True, Uncertain),
+                                         (b'not json', False, Retryable), (b'not json', True, Uncertain),
+                                         (b'x' * (1024 * 1024 + 1), False, Retryable),
+                                         (b'{"error":"INTERNAL_SERVER_ERROR"}', False, Retryable),
+                                         (b'{"error":"VALIDATION_ERROR"}', False, Permanent),
+                                         (b'{"error":"VALIDATION_ERROR"}', True, Uncertain)]:
+            with self.subTest(body=body[:30], side_effect=side_effect), \
+                 patch('app.integrations.bitrix._opener.open', return_value=io.BytesIO(body)), \
+                 self.assertRaises(error):
+                bitrix_transport('POST', WEBHOOK, {}, {}, side_effect)
+        for code, side_effect, expected in [(500, False, Retryable), (500, True, Uncertain),
+                                             (400, False, Permanent), (400, True, Uncertain)]:
+            error = HTTPError(WEBHOOK, code, 'error', {}, io.BytesIO(b'bad json'))
+            with self.subTest(code=code, side_effect=side_effect), \
+                 patch('app.integrations.bitrix._opener.open', side_effect=error), \
+                 self.assertRaises(expected) as caught:
+                bitrix_transport('POST', WEBHOOK, {}, {}, side_effect)
+            self.assertNotIn('synthetic1234', str(caught.exception))
+
     def test_phone_search_ignores_unrelated_contact(self):
         fake = FakeBitrix()
         fake.contacts["1"] = {"ID": "1", "PHONE": [{"VALUE": "+79990000000"}]}
